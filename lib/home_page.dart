@@ -10,7 +10,7 @@ class HomePage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text("หน้าหลักคนงาน"),
+        title: const Text("หน้าหลัก"),
         actions: [
           IconButton(onPressed: () => FirebaseAuth.instance.signOut(), icon: const Icon(Icons.logout))
         ],
@@ -21,7 +21,7 @@ class HomePage extends StatelessWidget {
           children: [
             Text("ล็อกอินด้วย: ${user.email}"),
             const SizedBox(height: 20),
-            const Text("ยินดีต้อนรับ! พร้อมเริ่มตรวจดินหรือยัง?"),
+            const Text("ยินดีต้อนรับ!"),
           ],
         ),
       ),

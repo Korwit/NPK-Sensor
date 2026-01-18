@@ -20,7 +20,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false, // ปิดแถบ Debug
-      title: 'ระบบตรวจวัดดิน',
+      title: 'ระบบตรวจคุณภาพวัดดิน',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.green), // เปลี่ยนเป็นสีเขียวให้เข้ากับธีมตรวจดิน
         useMaterial3: true,

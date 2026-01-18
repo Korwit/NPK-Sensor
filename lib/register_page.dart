@@ -15,15 +15,13 @@ class _RegisterPageState extends State<RegisterPage> {
 
   // ตัวแปรสำหรับเช็คเงื่อนไขรหัสผ่านแบบ Real-time
   bool _isPasswordSixCharacters = false;
-  bool _hasPasswordNumber = false;
-  bool _hasPasswordLetter = false;
+
 
   // ฟังก์ชันเช็ครหัสผ่านขณะพิมพ์
   void onPasswordChanged(String password) {
     setState(() {
       _isPasswordSixCharacters = password.length >= 6;
-      _hasPasswordNumber = RegExp(r'[0-9]').hasMatch(password);
-      _hasPasswordLetter = RegExp(r'[a-zA-Z]').hasMatch(password);
+
     });
   }
 
@@ -52,7 +50,7 @@ class _RegisterPageState extends State<RegisterPage> {
     }
 
     // 4. ตรวจสอบเงื่อนไขรหัสผ่าน (Checklist)
-    if (!_isPasswordSixCharacters || !_hasPasswordNumber || !_hasPasswordLetter) {
+    if (!_isPasswordSixCharacters) {
       _showErrorDialog("รหัสผ่านยังไม่ครบตามเงื่อนไข");
       return;
     }
@@ -130,7 +128,7 @@ class _RegisterPageState extends State<RegisterPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("สมัครใช้งานระบบตรวจดิน")),
+      appBar: AppBar(title: const Text("สมัครใช้งาน")),
       body: Padding(
         padding: const EdgeInsets.all(20.0),
         child: SingleChildScrollView(
@@ -152,15 +150,13 @@ class _RegisterPageState extends State<RegisterPage> {
               ),
               const SizedBox(height: 10),
               // --- เพิ่มเงื่อนไข: ถ้ายังติ๊กไม่ครบ 3 อัน ให้แสดงรายการเช็คลิสต์ ---
-              if (!(_isPasswordSixCharacters && _hasPasswordLetter && _hasPasswordNumber)) ...[
+              if (!(_isPasswordSixCharacters )) ...[
                 buildCheckItem("มีอย่างน้อย 6 ตัวอักษร", _isPasswordSixCharacters),
-                buildCheckItem("มีตัวอักษร (A-Z, a-z)", _hasPasswordLetter),
-                buildCheckItem("มีตัวเลข (0-9)", _hasPasswordNumber),
               ] else ...[
                 // ถ้าครบแล้ว แสดงข้อความบอกว่ารหัสผ่านปลอดภัย
                 const Padding(
                   padding: EdgeInsets.only(left: 4.0),
-                  child: Text("✓ รหัสผ่านปลอดภัย", style: TextStyle(color: Colors.green, fontSize: 12)),
+                  child: Text("", style: TextStyle(color: Colors.green, fontSize: 12)),
                 ),
               ],
               const SizedBox(height: 15),
