@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "715128702903",
+    "project_id": "npk-sensor-51b5c",
+    "storage_bucket": "npk-sensor-51b5c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:715128702903:android:3657db82040452e8ba8a32",
+        "android_client_info": {
+          "package_name": "com.example.flutter_application_1"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB9gROLTi2q2N303VPeceMZI0gcovBRwEs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
