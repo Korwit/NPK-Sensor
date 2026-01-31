@@ -3,7 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:intl/intl.dart'; // แนะนำให้เพิ่ม package นี้เพื่อจัดรูปแบบเวลา (หรือใช้แบบธรรมดาก็ได้)
+import 'package:intl/intl.dart'; 
 
 class HomePage extends StatefulWidget {
   final String gardenId;
@@ -21,8 +21,11 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final MapController _mapController = MapController();
-  LatLng _currentPosition = const LatLng(13.7563, 100.5018); // พิกัดสำหรับปุ่มบันทึก
+  LatLng _currentPosition = const LatLng(13.7563, 100.5018);
   bool _isLoadingLocation = true;
+  
+  // จำว่าเลือกหมุดไหนอยู่
+  int? _selectedIndex;
 
   @override
   void initState() {
@@ -30,7 +33,6 @@ class _HomePageState extends State<HomePage> {
     _getCurrentLocation();
   }
 
-  // ฟังก์ชันดึงพิกัดปัจจุบัน (เอาไว้สำหรับตอนกดปุ่ม + เพื่อบันทึกจุดใหม่)
   Future<void> _getCurrentLocation() async {
     try {
       Position position = await Geolocator.getCurrentPosition(
@@ -41,19 +43,15 @@ class _HomePageState extends State<HomePage> {
           _currentPosition = LatLng(position.latitude, position.longitude);
           _isLoadingLocation = false;
         });
-        // เลื่อนแผนที่ไปหาตำแหน่งปัจจุบันแค่ครั้งแรกพอ
         _mapController.move(_currentPosition, 16.0);
       }
     } catch (e) {
-      print("Error getting location: $e");
+      debugPrint("Error: $e");
     }
   }
 
-  // ฟังก์ชันบันทึกจุดใหม่ (New Point)
   Future<void> _addNewPoint() async {
-    // อัปเดตพิกัดล่าสุดก่อนบันทึก
     await _getCurrentLocation(); 
-    
     try {
       await FirebaseFirestore.instance
           .collection('gardens').doc(widget.gardenId)
@@ -62,12 +60,8 @@ class _HomePageState extends State<HomePage> {
             'latitude': _currentPosition.latitude,
             'longitude': _currentPosition.longitude,
             'timestamp': FieldValue.serverTimestamp(),
-            'n_value': 0, // รอค่าจริง
-            'p_value': 0,
-            'k_value': 0,
-            'moisture': 0,
+            'n_value': 0, 'p_value': 0, 'k_value': 0, 'moisture': 0,
           });
-      
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("เพิ่มจุดตรวจใหม่แล้ว!"), backgroundColor: Colors.green)
       );
@@ -76,18 +70,65 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // ฟังก์ชันแสดงรายละเอียดเมื่อกดที่หมุด
-  void _showMarkerDetails(Map<String, dynamic> data) {
+  void _deletePoint(String docId) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("ยืนยันการลบ"),
+        content: const Text("ต้องการลบจุดตรวจนี้ใช่ไหม?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("ยกเลิก"),
+          ),
+          TextButton(
+            onPressed: () async {
+              await FirebaseFirestore.instance
+                  .collection('gardens').doc(widget.gardenId)
+                  .collection('inspections').doc(widget.inspectionDateId)
+                  .collection('points').doc(docId).delete();
+              
+              setState(() {
+                _selectedIndex = null;
+              });
+
+              if (mounted) Navigator.pop(context);
+              
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("ลบข้อมูลเรียบร้อย"), backgroundColor: Colors.redAccent)
+              );
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text("ลบ"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showMarkerDetails(String docId, Map<String, dynamic> data) {
     showModalBottomSheet(
       context: context,
       builder: (context) {
         return Container(
           padding: const EdgeInsets.all(20),
-          height: 200,
+          height: 250,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text("ข้อมูลจุดตรวจ", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text("ข้อมูลจุดตรวจ", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                  IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _deletePoint(docId);
+                    },
+                  )
+                ],
+              ),
               const Divider(),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -123,7 +164,13 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // แปลง Timestamp เป็นเวลาที่อ่านง่าย
+  void _selectPoint(int index, LatLng location) {
+    setState(() {
+      _selectedIndex = index;
+    });
+    _mapController.move(location, 18.0);
+  }
+
   String _formatTime(Timestamp? timestamp) {
     if (timestamp == null) return "-";
     DateTime date = timestamp.toDate();
@@ -132,112 +179,125 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    // Stream หลักที่ดึงข้อมูลจุดตรวจทั้งหมดในวันนี้
-    var pointsStream = FirebaseFirestore.instance
-        .collection('gardens').doc(widget.gardenId)
-        .collection('inspections').doc(widget.inspectionDateId)
-        .collection('points')
-        .orderBy('timestamp', descending: true)
-        .snapshots();
-
     return Scaffold(
       appBar: AppBar(
         title: const Text("แผนที่และข้อมูลจุดตรวจ"),
         backgroundColor: Colors.green,
       ),
       body: StreamBuilder<QuerySnapshot>(
-        stream: pointsStream,
+        stream: FirebaseFirestore.instance
+            .collection('gardens').doc(widget.gardenId)
+            .collection('inspections').doc(widget.inspectionDateId)
+            .collection('points')
+            .orderBy('timestamp', descending: true)
+            .snapshots(),
         builder: (context, snapshot) {
           if (snapshot.hasError) return Center(child: Text("Error: ${snapshot.error}"));
           if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
 
           var docs = snapshot.data!.docs;
 
-          // 1. เตรียม Marker สำหรับแผนที่
-          List<Marker> mapMarkers = docs.map((doc) {
-            var data = doc.data() as Map<String, dynamic>;
-            double lat = data['latitude'] ?? 0.0;
-            double long = data['longitude'] ?? 0.0;
+          List<Marker> mapMarkers = [];
+          for (int i = 0; i < docs.length; i++) {
+            var data = docs[i].data() as Map<String, dynamic>;
+            String docId = docs[i].id;
+            LatLng point = LatLng(data['latitude'] ?? 0, data['longitude'] ?? 0);
+            
+            bool isSelected = (i == _selectedIndex);
 
-            return Marker(
-              point: LatLng(lat, long),
-              width: 40,
-              height: 40,
-              child: GestureDetector(
-                onTap: () => _showMarkerDetails(data), // กดแล้วโชว์ NPK
-                child: const Icon(Icons.location_on, color: Colors.red, size: 40),
+            mapMarkers.add(
+              Marker(
+                point: point,
+                width: 60,
+                height: 60,
+                child: GestureDetector(
+                  onTap: () {
+                    _selectPoint(i, point);
+                    _showMarkerDetails(docId, data);
+                  },
+                  child: isSelected 
+                      ? const BouncingPin() 
+                      : const Icon(Icons.location_on, color: Colors.red, size: 40),
+                ),
               ),
             );
-          }).toList();
+          }
 
-          // เพิ่ม Marker ตำแหน่งปัจจุบันเข้าไปด้วย (สีน้ำเงิน) จะได้รู้ว่าตัวเราอยู่ไหน
           mapMarkers.add(
             Marker(
               point: _currentPosition,
               width: 40,
               height: 40,
-              child: const Icon(Icons.my_location, color: Colors.blue, size: 30), // ตัวเรา
+              child: const Icon(Icons.my_location, color: Colors.blue, size: 30),
             ),
           );
 
           return Column(
             children: [
-              // --- ส่วนที่ 1: แผนที่ (ครึ่งบน) ---
+              // --- แผนที่ ---
               SizedBox(
-                height: MediaQuery.of(context).size.height * 0.45, // สูง 45% ของจอ
+                height: MediaQuery.of(context).size.height * 0.45,
                 child: FlutterMap(
                   mapController: _mapController,
                   options: MapOptions(
-                    initialCenter: _currentPosition, // เริ่มต้นที่ตัวเรา
+                    initialCenter: _currentPosition,
                     initialZoom: 16.0,
+                    onTap: (_, __) => setState(() => _selectedIndex = null),
                   ),
                   children: [
                     TileLayer(
                       urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.example.soil_app',
                     ),
-                    MarkerLayer(markers: mapMarkers), // แสดงหมุดทั้งหมด
+                    MarkerLayer(markers: mapMarkers),
                   ],
                 ),
               ),
 
-              // --- ส่วนที่ 2: รายการข้อมูล (ครึ่งล่าง) ---
+              // --- รายการข้อมูล ---
               Container(
                 padding: const EdgeInsets.all(10),
                 color: Colors.green[50],
                 width: double.infinity,
-                child: Text(
-                  "รายการตรวจ (${docs.length} จุด)", 
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)
-                ),
+                child: Text("รายการตรวจ (${docs.length} จุด)", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               ),
               Expanded(
                 child: ListView.builder(
+                  // *** จุดที่แก้ไข: เพิ่ม padding ด้านล่าง 100 หน่วย ***
+                  padding: const EdgeInsets.only(bottom: 100), 
                   itemCount: docs.length,
                   itemBuilder: (context, index) {
                     var data = docs[index].data() as Map<String, dynamic>;
+                    String docId = docs[index].id;
+                    bool isSelected = (index == _selectedIndex);
                     
                     return Card(
+                      color: isSelected ? Colors.green[100] : Colors.white,
+                      shape: isSelected 
+                          ? RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              side: const BorderSide(color: Colors.blue, width: 2))
+                          : null,
                       margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                       child: ListTile(
                         leading: CircleAvatar(
-                          backgroundColor: Colors.green,
+                          backgroundColor: isSelected ? Colors.blue : Colors.green,
                           child: Text("${index + 1}", style: const TextStyle(color: Colors.white)),
                         ),
                         title: Text("เวลา: ${_formatTime(data['timestamp'])}"),
-                        subtitle: Row(
-                          children: [
-                            Text("N: ${data['n_value']} ", style: TextStyle(color: Colors.blue[800], fontWeight: FontWeight.bold)),
-                            Text("P: ${data['p_value']} ", style: TextStyle(color: Colors.green[800], fontWeight: FontWeight.bold)),
-                            Text("K: ${data['k_value']}", style: TextStyle(color: Colors.orange[800], fontWeight: FontWeight.bold)),
-                          ],
+                        subtitle: Text("N: ${data['n_value']} P: ${data['p_value']} K: ${data['k_value']}"),
+                        
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                          onPressed: () {
+                            _deletePoint(docId);
+                          },
                         ),
-                        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+
                         onTap: () {
-                          // กดที่ลิสต์แล้วเลื่อนแผนที่ไปหาจุดนั้น
-                          _mapController.move(
-                            LatLng(data['latitude'], data['longitude']), 
-                            18.0
+                          _selectPoint(
+                            index, 
+                            LatLng(data['latitude'], data['longitude']),
                           );
                         },
                       ),
@@ -249,14 +309,57 @@ class _HomePageState extends State<HomePage> {
           );
         },
       ),
-      
-      // ปุ่มบวก ลอยอยู่มุมขวาล่างเหมือนเดิม
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _addNewPoint,
         label: const Text("บันทึกจุดนี้"),
         icon: const Icon(Icons.add_location_alt),
         backgroundColor: Colors.green,
       ),
+    );
+  }
+}
+
+class BouncingPin extends StatefulWidget {
+  const BouncingPin({super.key});
+
+  @override
+  State<BouncingPin> createState() => _BouncingPinState();
+}
+
+class _BouncingPinState extends State<BouncingPin> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _animation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    )..repeat(reverse: true);
+
+    _animation = Tween<double>(begin: 0, end: -15).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _animation,
+      builder: (context, child) {
+        return Transform.translate(
+          offset: Offset(0, _animation.value),
+          child: child,
+        );
+      },
+      child: const Icon(Icons.location_on, color: Colors.blue, size: 50),
     );
   }
 }

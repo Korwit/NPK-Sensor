@@ -11,9 +11,9 @@ class ProjectsPage extends StatefulWidget {
 }
 
 class _ProjectsPageState extends State<ProjectsPage> {
-  // เรียก user ใน build เพื่อให้ได้ค่าที่อัปเดตเสมอ
   User? get user => FirebaseAuth.instance.currentUser;
 
+  // --- 1. ฟังก์ชันสร้างโปรเจคใหม่ 
   void _createNewProject() {
     TextEditingController nameController = TextEditingController();
     showDialog(
@@ -22,10 +22,17 @@ class _ProjectsPageState extends State<ProjectsPage> {
         title: const Text("สร้างโปรเจคใหม่"),
         content: TextField(
           controller: nameController,
-          decoration: const InputDecoration(hintText: "ชื่อสวน"),
+          maxLength: 20, // เพิ่มบรรทัดนี้: จำกัดจำนวนตัวอักษร และแสดงตัวนับ
+          decoration: const InputDecoration(
+            hintText: "ชื่อสวน",            
+          ),
+          autofocus: true,
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("ยกเลิก")),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("ยกเลิก"),
+          ),
           ElevatedButton(
             onPressed: () {
               if (nameController.text.isNotEmpty) {
@@ -44,14 +51,59 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
+  // --- 2. ฟังก์ชันแก้ไขชื่อ 
+  void _editProject(String docId, String currentName) {
+    TextEditingController nameController = TextEditingController(text: currentName);
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("เปลี่ยนชื่อโปรเจค"),
+        content: TextField(
+          controller: nameController,
+          maxLength: 20, // เพิ่มบรรทัดนี้: จำกัดจำนวนตัวอักษร
+          decoration: const InputDecoration(hintText: "ชื่อสวนใหม่"),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("ยกเลิก"),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              if (nameController.text.isNotEmpty) {
+                FirebaseFirestore.instance
+                    .collection('gardens')
+                    .doc(docId)
+                    .update({'name': nameController.text});
+                
+                Navigator.pop(context);
+                
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("เปลี่ยนชื่อเรียบร้อย!")),
+                );
+              }
+            },
+            child: const Text("บันทึก"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- 3. ฟังก์ชันลบโปรเจค ---
   void _deleteProject(String docId) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text("ยืนยันการลบ"),
-        content: const Text("ข้อมูลทั้งหมดในสวนนี้จะหายไป"),
+        content: const Text("ข้อมูลการตรวจทั้งหมดในสวนนี้จะหายไป กู้คืนไม่ได้นะ!"),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("ยกเลิก")),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("ยกเลิก"),
+          ),
           TextButton(
             onPressed: () {
               FirebaseFirestore.instance.collection('gardens').doc(docId).delete();
@@ -85,33 +137,10 @@ class _ProjectsPageState extends State<ProjectsPage> {
             .orderBy('created_at', descending: true)
             .snapshots(),
         builder: (context, snapshot) {
-          // 1. เช็ค Error ก่อน (สำคัญมาก เพื่อแก้ปัญหาหมุนค้าง)
           if (snapshot.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(Icons.error_outline, color: Colors.red, size: 50),
-                    const SizedBox(height: 10),
-                    const Text("เกิดข้อผิดพลาดฐานข้อมูล", style: TextStyle(fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 5),
-                    // แสดงข้อความ Error จริงออกมา
-                    Text(snapshot.error.toString(), textAlign: TextAlign.center),
-                    const SizedBox(height: 20),
-                    const Text(
-                      "วิธีแก้: ดูที่ Debug Console แล้วคลิกลิงก์ 'Create Index'",
-                      style: TextStyle(color: Colors.blue),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-              ),
-            );
+            return Center(child: Text("Error: ${snapshot.error}"));
           }
 
-          // 2. เช็คสถานะโหลดปกติ
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
@@ -119,7 +148,16 @@ class _ProjectsPageState extends State<ProjectsPage> {
           var docs = snapshot.data!.docs;
 
           if (docs.isEmpty) {
-            return const Center(child: Text("ยังไม่มีโปรเจค กด + เพื่อสร้าง"));
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: const [
+                  Icon(Icons.eco_outlined, size: 80, color: Colors.grey),
+                  SizedBox(height: 10),
+                  Text("ยังไม่มีโปรเจค กด + เพื่อสร้างสวนแรกของคุณ"),
+                ],
+              ),
+            );
           }
 
           return ListView.builder(
@@ -127,24 +165,41 @@ class _ProjectsPageState extends State<ProjectsPage> {
             itemBuilder: (context, index) {
               var data = docs[index].data();
               String docId = docs[index].id;
+              String gardenName = data['name'] ?? "ไม่มีชื่อ";
               
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 child: ListTile(
-                  leading: const Icon(Icons.eco, color: Colors.green, size: 40),
-                  title: Text(data['name'] ?? "ไม่มีชื่อ", style: const TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: Text("ID: $docId"),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.red),
-                    onPressed: () => _deleteProject(docId),
+                  leading: const CircleAvatar(
+                    backgroundColor: Colors.green,
+                    child: Icon(Icons.eco, color: Colors.white),
                   ),
+                  title: Text(gardenName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text("ID: ...${docId.substring(docId.length - 4)}"), 
+                  
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.edit, color: Colors.orange),
+                        tooltip: "เปลี่ยนชื่อ",
+                        onPressed: () => _editProject(docId, gardenName),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        tooltip: "ลบโปรเจค",
+                        onPressed: () => _deleteProject(docId),
+                      ),
+                    ],
+                  ),
+                  
                   onTap: () {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
                         builder: (context) => InspectionDatesPage(
                           gardenId: docId, 
-                          gardenName: data['name']
+                          gardenName: gardenName
                         ),
                       ),
                     );
