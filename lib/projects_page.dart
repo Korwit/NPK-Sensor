@@ -13,7 +13,7 @@ class ProjectsPage extends StatefulWidget {
 class _ProjectsPageState extends State<ProjectsPage> {
   User? get user => FirebaseAuth.instance.currentUser;
 
-  // --- 1. ฟังก์ชันสร้างโปรเจคใหม่ ---
+  // --- 1. ฟังก์ชันสร้างโปรเจคใหม่ (ตัด nicknames ออก) ---
   void _createNewProject() {
     TextEditingController nameController = TextEditingController();
     showDialog(
@@ -33,10 +33,10 @@ class _ProjectsPageState extends State<ProjectsPage> {
               if (nameController.text.isNotEmpty) {
                 FirebaseFirestore.instance.collection('gardens').add({
                   'name': nameController.text,
-                  'owner_uid': user?.uid, // คนนี้คือเจ้าของสูงสุด
+                  'owner_uid': user?.uid,
                   'members': [user?.uid],
                   'roles': {user?.uid: 'owner'},
-                  'nicknames': {user?.uid: 'ฉัน (เจ้าของ)'},
+                  // 'nicknames': ... ตัดออกแล้ว! ไม่เก็บในสวนแล้ว
                   'created_at': FieldValue.serverTimestamp(),
                 });
                 Navigator.pop(context);
@@ -49,7 +49,90 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
-  // --- 2. ฟังก์ชันยืนยันการลบสมาชิก ---
+  // --- 2. ฟังก์ชันจัดการสมุดรายชื่อ (หัวใจหลักของการเก็บชื่อ) ---
+  Future<void> _updateContactInfo(String friendUid, String email, String? nickname) async {
+    // ถ้าชื่อเล่นว่างเปล่า -> ไม่บันทึกชื่อ แต่บันทึก email ไว้
+    // หรือถ้าอยากให้ลบชื่อเก่าออก ก็ส่ง "" มา
+    await FirebaseFirestore.instance
+        .collection('users').doc(user!.uid)
+        .collection('contacts').doc(friendUid)
+        .set({
+          'uid': friendUid,
+          'email': email,
+          'nickname': nickname ?? "",
+          'updated_at': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+  }
+
+  void _showContactsBook(Function(String email, String nickname) onSelected) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("สมุดรายชื่อส่วนตัว"),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 300,
+          child: StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance
+                .collection('users').doc(user!.uid)
+                .collection('contacts')
+                .orderBy('nickname')
+                .snapshots(),
+            builder: (context, snapshot) {
+              if (snapshot.hasError) return const Center(child: Text("เกิดข้อผิดพลาด"));
+              if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+
+              var docs = snapshot.data!.docs;
+              if (docs.isEmpty) {
+                return const Center(child: Text("ยังไม่มีรายชื่อ"));
+              }
+
+              return ListView.separated(
+                itemCount: docs.length,
+                separatorBuilder: (context, index) => const Divider(),
+                itemBuilder: (context, index) {
+                  var data = docs[index].data() as Map<String, dynamic>;
+                  String email = data['email'] ?? "";
+                  String nickname = data['nickname'] ?? "";
+                  String uid = docs[index].id;
+
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: Colors.blue[100],
+                      child: Text(
+                        (nickname.isNotEmpty ? nickname : email).substring(0, 1).toUpperCase(),
+                        style: TextStyle(color: Colors.blue[800], fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    title: Text(nickname.isNotEmpty ? nickname : email, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: nickname.isNotEmpty ? Text(email) : null,
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline, color: Colors.grey),
+                      onPressed: () {
+                        FirebaseFirestore.instance
+                            .collection('users').doc(user!.uid)
+                            .collection('contacts').doc(uid)
+                            .delete();
+                      },
+                    ),
+                    onTap: () {
+                      onSelected(email, nickname);
+                      Navigator.pop(context);
+                    },
+                  );
+                },
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("ปิด")),
+        ],
+      ),
+    );
+  }
+
+  // --- 3. ฟังก์ชันยืนยันการลบสมาชิก ---
   void _confirmRemoveMember(String docId, String memberUid, String nameToShow) {
     showDialog(
       context: context,
@@ -63,7 +146,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
               await FirebaseFirestore.instance.collection('gardens').doc(docId).update({
                 'members': FieldValue.arrayRemove([memberUid]),
                 'roles.$memberUid': FieldValue.delete(),
-                'nicknames.$memberUid': FieldValue.delete(),
+                // ไม่ต้องลบ nicknames ในสวนแล้ว เพราะไม่มีแล้ว
               });
               if (mounted) Navigator.pop(context); 
             },
@@ -75,45 +158,72 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
-  // --- 3. ฟังก์ชันเปลี่ยนตำแหน่ง (Role) ---
-  void _showChangeRoleDialog(String docId, String memberUid, String currentRole, String name) {
+  // --- 4. ฟังก์ชันจัดการ: เปลี่ยน Role (สวน) + เปลี่ยนชื่อ (Contact ส่วนตัว) ---
+  void _editMemberInfo(String docId, String memberUid, String currentRole, String? currentNickname, String email) {
     String newRole = currentRole;
+    TextEditingController nicknameController = TextEditingController(text: currentNickname ?? "");
+
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateDialog) => AlertDialog(
-          title: Text("เปลี่ยนตำแหน่ง: $name"),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              RadioListTile<String>(
-                title: const Text("ทีมงาน (Worker)"),
-                subtitle: const Text("เพิ่มจุดตรวจได้เท่านั้น"),
-                value: 'worker',
-                groupValue: newRole,
-                onChanged: (value) => setStateDialog(() => newRole = value!),
-                activeColor: Colors.green,
-              ),
-              RadioListTile<String>(
-                title: const Text("ผู้ช่วยเจ้าของ (Co-Owner)"),
-                subtitle: const Text("จัดการสวนได้ (ลบโปรเจคไม่ได้)"),
-                value: 'owner',
-                groupValue: newRole,
-                onChanged: (value) => setStateDialog(() => newRole = value!),
-                activeColor: Colors.orange,
-              ),
-            ],
+          title: Text("จัดการสมาชิก"),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("ชื่อเล่น (ส่วนตัว)", style: TextStyle(fontWeight: FontWeight.bold)),
+                TextField(
+                  controller: nicknameController,
+                  decoration: const InputDecoration(
+                    hintText: "ชื่อที่คุณเรียกคนนี้",
+                    isDense: true,
+                    prefixIcon: Icon(Icons.edit, size: 18),
+                    helperText: "บันทึกลงสมุดรายชื่อส่วนตัวของคุณ",
+                    helperStyle: TextStyle(color: Colors.blue),
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                const Text("ตำแหน่งในสวนนี้", style: TextStyle(fontWeight: FontWeight.bold)),
+                RadioListTile<String>(
+                  title: const Text("ทีมงาน (Worker)"),
+                  subtitle: const Text("เพิ่มจุดตรวจได้เท่านั้น"),
+                  value: 'worker',
+                  groupValue: newRole,
+                  onChanged: (value) => setStateDialog(() => newRole = value!),
+                  activeColor: Colors.green,
+                  contentPadding: EdgeInsets.zero,
+                ),
+                RadioListTile<String>(
+                  title: const Text("ผู้ช่วยเจ้าของ (Co-Owner)"),
+                  subtitle: const Text("จัดการสวนได้ (แต่ลบโปรเจคไม่ได้)"),
+                  value: 'owner',
+                  groupValue: newRole,
+                  onChanged: (value) => setStateDialog(() => newRole = value!),
+                  activeColor: Colors.orange,
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(context), child: const Text("ยกเลิก")),
             ElevatedButton(
               onPressed: () async {
+                // 1. อัปเดต Role ใน Garden (Shared)
                 await FirebaseFirestore.instance.collection('gardens').doc(docId).update({
                   'roles.$memberUid': newRole,
                 });
+                
+                // 2. อัปเดต Nickname ใน Contacts (Private)
+                String newName = nicknameController.text.trim();
+                await _updateContactInfo(memberUid, email, newName); // บันทึกเสมอไม่ว่าจะว่างหรือไม่
+
                 if (mounted) {
                    Navigator.pop(context);
-                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("เปลี่ยนตำแหน่งเรียบร้อย")));
+                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("บันทึกข้อมูลเรียบร้อย")));
                 }
               },
               child: const Text("บันทึก"),
@@ -124,11 +234,13 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
-  // --- 4. ฟังก์ชันจัดการสมาชิก ---
+  // --- 5. ฟังก์ชันจัดการสมาชิก (Main) ---
   void _manageMembers(String docId) {
-    TextEditingController emailController = TextEditingController();
+    String currentInputEmail = ""; 
+    TextEditingController emailTextController = TextEditingController(); 
     TextEditingController nicknameController = TextEditingController();
     String selectedRole = 'worker';
+    bool saveToContacts = true; // ตั้ง Default เป็น true เลยก็ได้เพื่อความสะดวก
 
     showDialog(
       context: context,
@@ -141,7 +253,6 @@ class _ProjectsPageState extends State<ProjectsPage> {
             var gardenData = snapshot.data!.data() as Map<String, dynamic>;
             List<dynamic> members = gardenData['members'] ?? [];
             Map<String, dynamic> roles = gardenData['roles'] ?? {};
-            Map<String, dynamic> nicknames = gardenData['nicknames'] ?? {};
             String primaryOwnerUid = gardenData['owner_uid'] ?? ""; 
 
             return AlertDialog(
@@ -156,24 +267,71 @@ class _ProjectsPageState extends State<ProjectsPage> {
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // --- ส่วนกรอกข้อมูล ---
-                          TextField(
-                            controller: emailController,
-                            decoration: const InputDecoration(
-                              labelText: "อีเมลสมาชิก *",
-                              hintText: "example@gmail.com",
-                              prefixIcon: Icon(Icons.email_outlined),
-                              border: OutlineInputBorder(),
-                              contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 15),
-                              isDense: true,
-                            ),
-                            keyboardType: TextInputType.emailAddress,
+                          // --- Search & Add ---
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Autocomplete<String>(
+                                  optionsBuilder: (TextEditingValue textEditingValue) async {
+                                    if (textEditingValue.text.length < 3) return const Iterable<String>.empty();
+                                    // ค้นหาจาก Contact เราก่อน (จะได้เจอชื่อเล่น) หรือ Users ทั้งหมดก็ได้
+                                    // ในที่นี้ค้นจาก Users ทั้งหมดเพื่อให้เจอคนใหม่ๆ
+                                    var querySnapshot = await FirebaseFirestore.instance
+                                        .collection('users')
+                                        .where('email', isGreaterThanOrEqualTo: textEditingValue.text)
+                                        .where('email', isLessThan: '${textEditingValue.text}z')
+                                        .limit(5).get();
+                                    return querySnapshot.docs.map((doc) => doc['email'] as String);
+                                  },
+                                  onSelected: (String selection) {
+                                    currentInputEmail = selection;
+                                    emailTextController.text = selection;
+                                  },
+                                  fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                                    if (emailTextController.text != controller.text) controller.text = emailTextController.text;
+                                    controller.addListener(() {
+                                      currentInputEmail = controller.text;
+                                      emailTextController.text = controller.text; 
+                                    });
+                                    return TextField(
+                                      controller: controller,
+                                      focusNode: focusNode,
+                                      decoration: const InputDecoration(
+                                        labelText: "อีเมลสมาชิก *",
+                                        hintText: "ค้นหา...",
+                                        prefixIcon: Icon(Icons.search),
+                                        border: OutlineInputBorder(),
+                                        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 15),
+                                        isDense: true,
+                                      ),
+                                      keyboardType: TextInputType.emailAddress,
+                                    );
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              IconButton.filledTonal(
+                                onPressed: () {
+                                  _showContactsBook((email, nickname) {
+                                    setStateDialog(() {
+                                      emailTextController.text = email;
+                                      currentInputEmail = email;
+                                      if (nickname.isNotEmpty) nicknameController.text = nickname;
+                                    });
+                                  });
+                                },
+                                icon: const Icon(Icons.contacts),
+                                tooltip: "เลือกจากสมุดรายชื่อ",
+                              )
+                            ],
                           ),
+
                           const SizedBox(height: 10),
                           TextField(
                             controller: nicknameController,
                             decoration: const InputDecoration(
-                              labelText: "ชื่อเล่น (ไม่บังคับ)",
+                              labelText: "ชื่อเล่น (ส่วนตัว)",
                               hintText: "เช่น ช่างสมชาย",
                               prefixIcon: Icon(Icons.badge_outlined),
                               border: OutlineInputBorder(),
@@ -181,7 +339,19 @@ class _ProjectsPageState extends State<ProjectsPage> {
                               isDense: true,
                             ),
                           ),
-                          const SizedBox(height: 15),
+                          
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text("บันทึกลงสมุดรายชื่อส่วนตัว", style: TextStyle(fontSize: 14)),
+                            value: saveToContacts,
+                            controlAffinity: ListTileControlAffinity.leading,
+                            onChanged: (bool? value) {
+                              setStateDialog(() {
+                                saveToContacts = value ?? true;
+                              });
+                            },
+                          ),
+
                           const Text("เลือกสิทธิ์การใช้งาน:", style: TextStyle(fontWeight: FontWeight.bold)),
                           Column(
                             children: [
@@ -197,7 +367,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                               RadioListTile<String>(
                                 contentPadding: EdgeInsets.zero,
                                 title: const Text("ผู้ช่วยเจ้าของ (Co-Owner)"),
-                                subtitle: const Text("จัดการสวนได้ (ลบโปรเจคไม่ได้)"),
+                                subtitle: const Text("จัดการสวนได้ (แต่ลบโปรเจคไม่ได้)"),
                                 value: 'owner',
                                 groupValue: selectedRole,
                                 activeColor: Colors.orange,
@@ -205,12 +375,13 @@ class _ProjectsPageState extends State<ProjectsPage> {
                               ),
                             ],
                           ),
+                          
                           SizedBox(
                             width: double.infinity,
                             child: ElevatedButton.icon(
                               onPressed: () async {
-                                if (emailController.text.isNotEmpty) {
-                                  String email = emailController.text.trim();
+                                if (currentInputEmail.isNotEmpty) {
+                                  String email = currentInputEmail.trim();
                                   String nickname = nicknameController.text.trim();
                                   
                                   var userQuery = await FirebaseFirestore.instance
@@ -220,18 +391,31 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                     if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("ไม่พบผู้ใช้นี้")));
                                   } else {
                                     String friendUid = userQuery.docs.first.id;
-                                    Map<String, dynamic> updateData = {
+                                    
+                                    if (members.contains(friendUid)) {
+                                       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("สมาชิกคนนี้มีอยู่แล้ว")));
+                                       return;
+                                    }
+
+                                    // 1. เพิ่มเข้า Garden (Shared) - *ไม่มี nickname แล้ว*
+                                    await FirebaseFirestore.instance.collection('gardens').doc(docId).update({
                                       'members': FieldValue.arrayUnion([friendUid]),
                                       'roles.$friendUid': selectedRole,
-                                    };
-                                    if (nickname.isNotEmpty) updateData['nicknames.$friendUid'] = nickname;
-
-                                    await FirebaseFirestore.instance.collection('gardens').doc(docId).update(updateData);
+                                    });
                                     
-                                    emailController.clear();
+                                    // 2. บันทึกลง Contacts (Private) - *เก็บ nickname ที่นี่*
+                                    if (saveToContacts || nickname.isNotEmpty) {
+                                      await _updateContactInfo(friendUid, email, nickname);
+                                    }
+
+                                    emailTextController.clear();
+                                    currentInputEmail = "";
                                     nicknameController.clear();
-                                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("เพิ่ม $email แล้ว")));
+
+                                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("เพิ่ม $email เรียบร้อย")));
                                   }
+                                } else {
+                                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("กรุณาระบุอีเมล")));
                                 }
                               },
                               icon: const Icon(Icons.person_add),
@@ -242,7 +426,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                           
                           const Divider(height: 30, thickness: 1),
 
-                          // --- รายชื่อสมาชิก ---
+                          // --- รายชื่อสมาชิก (ส่วนแสดงผล) ---
                           ExpansionTile(
                             title: Text("รายชื่อสมาชิก (${members.length})", 
                               style: TextStyle(color: Colors.grey[800], fontWeight: FontWeight.bold)
@@ -258,69 +442,39 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                   itemBuilder: (context, index) {
                                     String memberUid = members[index];
                                     String role = roles[memberUid] ?? 'worker';
-                                    String? nickname = nicknames[memberUid];
                                     bool isMe = (memberUid == user?.uid);
                                     bool isPrimaryOwner = (memberUid == primaryOwnerUid);
 
-                                    return FutureBuilder<DocumentSnapshot>(
-                                      future: FirebaseFirestore.instance.collection('users').doc(memberUid).get(),
-                                      builder: (context, userSnap) {
-                                        String email = "...";
-                                        if (userSnap.hasData && userSnap.data!.exists) {
-                                          email = userSnap.data!.get('email') ?? "ไม่มีอีเมล";
-                                        }
-
-                                        String titleToShow = (nickname != null && nickname.isNotEmpty) ? nickname : email;
+                                    // ตรงนี้สำคัญ! ต้องดึงข้อมูลจาก Contacts ของเรามาแสดง (ไม่ใช่จาก Garden)
+                                    return StreamBuilder<DocumentSnapshot>(
+                                      stream: FirebaseFirestore.instance
+                                          .collection('users').doc(user!.uid)
+                                          .collection('contacts').doc(memberUid)
+                                          .snapshots(), // ฟัง Contact เราก่อน
+                                      builder: (context, contactSnap) {
                                         
-                                        String roleText;
-                                        if (isPrimaryOwner) {
-                                          roleText = "เจ้าของสูงสุด (Creator)";
-                                        } else if (role == 'owner') {
-                                          roleText = "ผู้ช่วยเจ้าของ (Co-Owner)";
+                                        // ถ้ามีใน Contact -> ใช้ชื่อจาก Contact
+                                        // ถ้าไม่มี -> ไปดึง Email จาก Users กลาง
+                                        
+                                        if (contactSnap.hasData && contactSnap.data!.exists) {
+                                          // มี Contact: ใช้ข้อมูลส่วนตัวเรา
+                                          var cData = contactSnap.data!.data() as Map<String, dynamic>;
+                                          String nickname = cData['nickname'] ?? "";
+                                          String email = cData['email'] ?? "...";
+                                          return _buildMemberTile(docId, memberUid, role, email, nickname, isMe, isPrimaryOwner);
                                         } else {
-                                          roleText = "ทีมงาน (Worker)";
+                                          // ไม่มี Contact: ไปดึง User กลาง
+                                          return FutureBuilder<DocumentSnapshot>(
+                                            future: FirebaseFirestore.instance.collection('users').doc(memberUid).get(),
+                                            builder: (context, userSnap) {
+                                              String email = "...";
+                                              if (userSnap.hasData && userSnap.data!.exists) {
+                                                email = userSnap.data!.get('email') ?? "ไม่มีอีเมล";
+                                              }
+                                              return _buildMemberTile(docId, memberUid, role, email, "", isMe, isPrimaryOwner);
+                                            },
+                                          );
                                         }
-
-                                        String subtitleToShow = (nickname != null && nickname.isNotEmpty) 
-                                            ? "$email • $roleText"
-                                            : roleText;
-
-                                        return ListTile(
-                                          contentPadding: EdgeInsets.zero,
-                                          dense: true,
-                                          leading: CircleAvatar(
-                                            radius: 18,
-                                            backgroundColor: isPrimaryOwner 
-                                                ? Colors.amber[100] 
-                                                : (role == 'owner' ? Colors.orange[100] : Colors.green[100]),
-                                            child: Text(
-                                              titleToShow.substring(0, 1).toUpperCase(),
-                                              style: TextStyle(
-                                                color: isPrimaryOwner ? Colors.amber[900] : (role == 'owner' ? Colors.orange[800] : Colors.green[800]),
-                                                fontWeight: FontWeight.bold
-                                              ),
-                                            ),
-                                          ),
-                                          title: Text(titleToShow, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                                          subtitle: Text(subtitleToShow, style: TextStyle(fontSize: 11, color: Colors.grey[600])),
-                                          trailing: isMe 
-                                            ? const Text("(คุณ)", style: TextStyle(color: Colors.grey, fontSize: 12))
-                                            : isPrimaryOwner 
-                                                ? const Text("เจ้าของ", style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 12))
-                                                : Row(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      IconButton(
-                                                        icon: const Icon(Icons.manage_accounts, color: Colors.blue, size: 24),
-                                                        onPressed: () => _showChangeRoleDialog(docId, memberUid, role, titleToShow),
-                                                      ),
-                                                      IconButton(
-                                                        icon: const Icon(Icons.remove_circle_outline, color: Colors.red, size: 24),
-                                                        onPressed: () => _confirmRemoveMember(docId, memberUid, titleToShow),
-                                                      ),
-                                                    ],
-                                                  ),
-                                        );
                                       },
                                     );
                                   },
@@ -344,7 +498,57 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
-  // --- 5. ฟังก์ชันแก้ไขชื่อโปรเจค ---
+  // --- Helper Widget สำหรับสร้าง ListTile สมาชิก (จะได้ไม่เขียนซ้ำ) ---
+  Widget _buildMemberTile(String docId, String memberUid, String role, String email, String nickname, bool isMe, bool isPrimaryOwner) {
+    String titleToShow = (nickname.isNotEmpty) ? nickname : email;
+    String roleText;
+    
+    if (isPrimaryOwner) roleText = "เจ้าของสูงสุด";
+    else if (role == 'owner') roleText = "ผู้ช่วย";
+    else roleText = "ทีมงาน";
+
+    String subtitleToShow = (nickname.isNotEmpty) ? "$email • $roleText" : roleText;
+
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      leading: CircleAvatar(
+        radius: 18,
+        backgroundColor: isPrimaryOwner 
+            ? Colors.amber[100] 
+            : (role == 'owner' ? Colors.orange[100] : Colors.green[100]),
+        child: Text(
+          titleToShow.substring(0, 1).toUpperCase(),
+          style: TextStyle(
+            color: isPrimaryOwner ? Colors.amber[900] : (role == 'owner' ? Colors.orange[800] : Colors.green[800]),
+            fontWeight: FontWeight.bold
+          ),
+        ),
+      ),
+      title: Text(titleToShow, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+      subtitle: Text(subtitleToShow, style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+      trailing: isMe 
+        ? const Text("(คุณ)", style: TextStyle(color: Colors.grey, fontSize: 12))
+        : isPrimaryOwner 
+            ? const Text("เจ้าของ", style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 12))
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.manage_accounts, color: Colors.blue, size: 24),
+                    // กดแล้วแก้ทั้ง Role และชื่อ (เข้า Contact)
+                    onPressed: () => _editMemberInfo(docId, memberUid, role, nickname, email),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.remove_circle_outline, color: Colors.red, size: 24),
+                    onPressed: () => _confirmRemoveMember(docId, memberUid, titleToShow),
+                  ),
+                ],
+              ),
+    );
+  }
+
+  // --- 6. ฟังก์ชันแก้ไขชื่อโปรเจค ---
   void _editProject(String docId, String currentName) {
     TextEditingController nameController = TextEditingController(text: currentName);
     showDialog(
@@ -373,7 +577,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
-  // --- 6. ฟังก์ชันลบโปรเจค (สำหรับเจ้าของสูงสุด) ---
+  // --- 7. ฟังก์ชันลบโปรเจค ---
   void _deleteProject(String docId) {
     showDialog(
       context: context,
@@ -395,22 +599,21 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
-  // --- [ใหม่!] 7. ฟังก์ชันออกจากโปรเจค (สำหรับ Co-Owner) ---
+  // --- 8. ฟังก์ชันออกจากโปรเจค ---
   void _leaveProject(String docId, String gardenName) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text("ออกจากโปรเจค"),
-        content: Text("คุณต้องการออกจากทีม '$gardenName' ใช่หรือไม่? \n(คุณจะไม่เห็นสวนนี้อีกจนกว่าจะได้รับเชิญใหม่)"),
+        content: Text("คุณต้องการออกจากทีม '$gardenName' ใช่หรือไม่?"),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text("ยกเลิก")),
           TextButton(
             onPressed: () async {
-              // ลบตัวเองออกจากสมาชิก
               await FirebaseFirestore.instance.collection('gardens').doc(docId).update({
                 'members': FieldValue.arrayRemove([user!.uid]),
                 'roles.${user!.uid}': FieldValue.delete(),
-                'nicknames.${user!.uid}': FieldValue.delete(),
+                // ไม่ต้องลบ nicknames เพราะไม่มีแล้ว
               });
               if (mounted) Navigator.pop(context);
             },
@@ -455,19 +658,18 @@ class _ProjectsPageState extends State<ProjectsPage> {
               String docId = docs[index].id;
               String gardenName = data['name'] ?? "ไม่มีชื่อ";
               
-              // --- Logic การเช็ค Role ---
               String primaryOwnerUid = data['owner_uid'] ?? "";
               Map<String, dynamic> roles = data['roles'] ?? {};
               String myRole = roles[user?.uid] ?? 'worker';
               
-              bool isPrimaryOwner = (user?.uid == primaryOwnerUid); // เจ้าของสูงสุด
-              bool isCoOwner = (!isPrimaryOwner && myRole == 'owner'); // ผู้ช่วยเจ้าของ (Co-Owner)
+              bool isPrimaryOwner = (user?.uid == primaryOwnerUid);
+              bool isCoOwner = (!isPrimaryOwner && myRole == 'owner');
 
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 child: ListTile(
                   leading: CircleAvatar(
-                    backgroundColor: isPrimaryOwner ? Colors.green : Colors.orange, // เจ้าของสีเขียว, Co-owner สีส้ม
+                    backgroundColor: isPrimaryOwner ? Colors.green : Colors.orange,
                     child: const Icon(Icons.eco, color: Colors.white),
                   ),
                   title: Text(gardenName, style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -476,35 +678,28 @@ class _ProjectsPageState extends State<ProjectsPage> {
                     : (isCoOwner ? "สถานะ: ผู้ช่วยเจ้าของ" : "สถานะ: ทีมงาน")
                   ), 
                   
-                  // แสดงปุ่มถ้าเป็น Primary หรือ Co-Owner
                   trailing: (isPrimaryOwner || isCoOwner) ? Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // ปุ่มจัดการสมาชิก
                       IconButton(
                         icon: const Icon(Icons.people, color: Colors.blue),
                         tooltip: "จัดการสมาชิก",
                         onPressed: () => _manageMembers(docId),
                       ),
-                      // ปุ่มแก้ไขชื่อ
                       IconButton(
                         icon: const Icon(Icons.edit, color: Colors.orange),
                         tooltip: "แก้ไขชื่อ",
                         onPressed: () => _editProject(docId, gardenName),
                       ),
-                      
-                      // --- ปุ่มลบ (ทำงานต่างกันตาม Role) ---
                       if (isPrimaryOwner) 
-                        // เจ้าของสูงสุด: ลบโปรเจค
                         IconButton(
                           icon: const Icon(Icons.delete, color: Colors.red),
                           tooltip: "ลบโปรเจคถาวร",
                           onPressed: () => _deleteProject(docId),
                         )
                       else if (isCoOwner)
-                        // Co-Owner: ออกจากโปรเจค (ใช้ไอคอน exit_to_app ให้สื่อความหมาย แต่ถ้าชอบถังขยะก็ใช้ delete ได้)
                         IconButton(
-                          icon: const Icon(Icons.exit_to_app, color: Colors.redAccent), // เปลี่ยนไอคอนให้สื่อความหมาย
+                          icon: const Icon(Icons.exit_to_app, color: Colors.redAccent),
                           tooltip: "ออกจากโปรเจค",
                           onPressed: () => _leaveProject(docId, gardenName),
                         ),
