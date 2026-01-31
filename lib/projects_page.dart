@@ -33,7 +33,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
               if (nameController.text.isNotEmpty) {
                 FirebaseFirestore.instance.collection('gardens').add({
                   'name': nameController.text,
-                  'owner_uid': user?.uid,
+                  'owner_uid': user?.uid, // คนนี้คือเจ้าของสูงสุด
                   'members': [user?.uid],
                   'roles': {user?.uid: 'owner'},
                   'nicknames': {user?.uid: 'ฉัน (เจ้าของ)'},
@@ -75,7 +75,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
-  // --- [ใหม่!] 3. ฟังก์ชันเปลี่ยนตำแหน่ง (Role) ---
+  // --- 3. ฟังก์ชันเปลี่ยนตำแหน่ง (Role) ---
   void _showChangeRoleDialog(String docId, String memberUid, String currentRole, String name) {
     String newRole = currentRole;
     showDialog(
@@ -96,7 +96,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
               ),
               RadioListTile<String>(
                 title: const Text("ผู้ช่วยเจ้าของ (Co-Owner)"),
-                subtitle: const Text("แก้ไข/ลบสวนได้"),
+                subtitle: const Text("จัดการสวนได้ (ลบโปรเจคไม่ได้)"),
                 value: 'owner',
                 groupValue: newRole,
                 onChanged: (value) => setStateDialog(() => newRole = value!),
@@ -108,7 +108,6 @@ class _ProjectsPageState extends State<ProjectsPage> {
             TextButton(onPressed: () => Navigator.pop(context), child: const Text("ยกเลิก")),
             ElevatedButton(
               onPressed: () async {
-                // อัปเดต Role ใน Firebase
                 await FirebaseFirestore.instance.collection('gardens').doc(docId).update({
                   'roles.$memberUid': newRole,
                 });
@@ -143,6 +142,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
             List<dynamic> members = gardenData['members'] ?? [];
             Map<String, dynamic> roles = gardenData['roles'] ?? {};
             Map<String, dynamic> nicknames = gardenData['nicknames'] ?? {};
+            String primaryOwnerUid = gardenData['owner_uid'] ?? ""; 
 
             return AlertDialog(
               title: const Text("จัดการสมาชิก"),
@@ -156,7 +156,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // --- ส่วนกรอกข้อมูลเพิ่มคน ---
+                          // --- ส่วนกรอกข้อมูล ---
                           TextField(
                             controller: emailController,
                             decoration: const InputDecoration(
@@ -188,7 +188,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                               RadioListTile<String>(
                                 contentPadding: EdgeInsets.zero,
                                 title: const Text("ทีมงาน (Worker)"),
-                                subtitle: const Text("เพิ่มจุดตรวจได้เท่านั้น", style: TextStyle(fontSize: 12)),
+                                subtitle: const Text("เพิ่มจุดตรวจได้เท่านั้น"),
                                 value: 'worker',
                                 groupValue: selectedRole,
                                 activeColor: Colors.green,
@@ -197,7 +197,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                               RadioListTile<String>(
                                 contentPadding: EdgeInsets.zero,
                                 title: const Text("ผู้ช่วยเจ้าของ (Co-Owner)"),
-                                subtitle: const Text("แก้ไข/ลบสวนได้เหมือนคุณ", style: TextStyle(fontSize: 12)),
+                                subtitle: const Text("จัดการสวนได้ (ลบโปรเจคไม่ได้)"),
                                 value: 'owner',
                                 groupValue: selectedRole,
                                 activeColor: Colors.orange,
@@ -260,6 +260,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                     String role = roles[memberUid] ?? 'worker';
                                     String? nickname = nicknames[memberUid];
                                     bool isMe = (memberUid == user?.uid);
+                                    bool isPrimaryOwner = (memberUid == primaryOwnerUid);
 
                                     return FutureBuilder<DocumentSnapshot>(
                                       future: FirebaseFirestore.instance.collection('users').doc(memberUid).get(),
@@ -270,47 +271,55 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                         }
 
                                         String titleToShow = (nickname != null && nickname.isNotEmpty) ? nickname : email;
+                                        
+                                        String roleText;
+                                        if (isPrimaryOwner) {
+                                          roleText = "เจ้าของสูงสุด (Creator)";
+                                        } else if (role == 'owner') {
+                                          roleText = "ผู้ช่วยเจ้าของ (Co-Owner)";
+                                        } else {
+                                          roleText = "ทีมงาน (Worker)";
+                                        }
+
                                         String subtitleToShow = (nickname != null && nickname.isNotEmpty) 
-                                            ? "$email • ${role == 'owner' ? 'เจ้าของ' : 'ทีมงาน'}"
-                                            : (role == 'owner' ? 'เจ้าของ' : 'ทีมงาน');
+                                            ? "$email • $roleText"
+                                            : roleText;
 
                                         return ListTile(
                                           contentPadding: EdgeInsets.zero,
                                           dense: true,
                                           leading: CircleAvatar(
                                             radius: 18,
-                                            backgroundColor: role == 'owner' ? Colors.orange[100] : Colors.green[100],
+                                            backgroundColor: isPrimaryOwner 
+                                                ? Colors.amber[100] 
+                                                : (role == 'owner' ? Colors.orange[100] : Colors.green[100]),
                                             child: Text(
                                               titleToShow.substring(0, 1).toUpperCase(),
                                               style: TextStyle(
-                                                color: role == 'owner' ? Colors.orange[800] : Colors.green[800],
+                                                color: isPrimaryOwner ? Colors.amber[900] : (role == 'owner' ? Colors.orange[800] : Colors.green[800]),
                                                 fontWeight: FontWeight.bold
                                               ),
                                             ),
                                           ),
                                           title: Text(titleToShow, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                                           subtitle: Text(subtitleToShow, style: TextStyle(fontSize: 11, color: Colors.grey[600])),
-                                          
-                                          // --- ส่วนปุ่มจัดการ (เปลี่ยน Role + ลบ) ---
                                           trailing: isMe 
                                             ? const Text("(คุณ)", style: TextStyle(color: Colors.grey, fontSize: 12))
-                                            : Row(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  // ปุ่มเปลี่ยน Role (รูปเฟือง/จัดการบัญชี)
-                                                  IconButton(
-                                                    icon: const Icon(Icons.manage_accounts, color: Colors.blue, size: 24),
-                                                    tooltip: "เปลี่ยนตำแหน่ง",
-                                                    onPressed: () => _showChangeRoleDialog(docId, memberUid, role, titleToShow),
+                                            : isPrimaryOwner 
+                                                ? const Text("เจ้าของ", style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 12))
+                                                : Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      IconButton(
+                                                        icon: const Icon(Icons.manage_accounts, color: Colors.blue, size: 24),
+                                                        onPressed: () => _showChangeRoleDialog(docId, memberUid, role, titleToShow),
+                                                      ),
+                                                      IconButton(
+                                                        icon: const Icon(Icons.remove_circle_outline, color: Colors.red, size: 24),
+                                                        onPressed: () => _confirmRemoveMember(docId, memberUid, titleToShow),
+                                                      ),
+                                                    ],
                                                   ),
-                                                  // ปุ่มลบ
-                                                  IconButton(
-                                                    icon: const Icon(Icons.remove_circle_outline, color: Colors.red, size: 24),
-                                                    tooltip: "ลบสมาชิก",
-                                                    onPressed: () => _confirmRemoveMember(docId, memberUid, titleToShow),
-                                                  ),
-                                                ],
-                                              ),
                                         );
                                       },
                                     );
@@ -364,13 +373,13 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
-  // --- 6. ฟังก์ชันลบโปรเจค ---
+  // --- 6. ฟังก์ชันลบโปรเจค (สำหรับเจ้าของสูงสุด) ---
   void _deleteProject(String docId) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text("ยืนยันการลบ"),
-        content: const Text("ข้อมูลการตรวจทั้งหมดในสวนนี้จะหายไป กู้คืนไม่ได้นะ!"),
+        title: const Text("ลบโปรเจคถาวร"),
+        content: const Text("คุณแน่ใจไหม? ข้อมูลทั้งหมดจะหายไปและกู้คืนไม่ได้"),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text("ยกเลิก")),
           TextButton(
@@ -379,7 +388,34 @@ class _ProjectsPageState extends State<ProjectsPage> {
               Navigator.pop(context);
             },
             style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text("ลบ"),
+            child: const Text("ลบถาวร"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- [ใหม่!] 7. ฟังก์ชันออกจากโปรเจค (สำหรับ Co-Owner) ---
+  void _leaveProject(String docId, String gardenName) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("ออกจากโปรเจค"),
+        content: Text("คุณต้องการออกจากทีม '$gardenName' ใช่หรือไม่? \n(คุณจะไม่เห็นสวนนี้อีกจนกว่าจะได้รับเชิญใหม่)"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("ยกเลิก")),
+          TextButton(
+            onPressed: () async {
+              // ลบตัวเองออกจากสมาชิก
+              await FirebaseFirestore.instance.collection('gardens').doc(docId).update({
+                'members': FieldValue.arrayRemove([user!.uid]),
+                'roles.${user!.uid}': FieldValue.delete(),
+                'nicknames.${user!.uid}': FieldValue.delete(),
+              });
+              if (mounted) Navigator.pop(context);
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text("ออก"),
           ),
         ],
       ),
@@ -419,38 +455,59 @@ class _ProjectsPageState extends State<ProjectsPage> {
               String docId = docs[index].id;
               String gardenName = data['name'] ?? "ไม่มีชื่อ";
               
+              // --- Logic การเช็ค Role ---
+              String primaryOwnerUid = data['owner_uid'] ?? "";
               Map<String, dynamic> roles = data['roles'] ?? {};
               String myRole = roles[user?.uid] ?? 'worker';
-              bool isOwner = (myRole == 'owner');
+              
+              bool isPrimaryOwner = (user?.uid == primaryOwnerUid); // เจ้าของสูงสุด
+              bool isCoOwner = (!isPrimaryOwner && myRole == 'owner'); // ผู้ช่วยเจ้าของ (Co-Owner)
 
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 child: ListTile(
-                  leading: const CircleAvatar(
-                    backgroundColor: Colors.green,
-                    child: Icon(Icons.eco, color: Colors.white),
+                  leading: CircleAvatar(
+                    backgroundColor: isPrimaryOwner ? Colors.green : Colors.orange, // เจ้าของสีเขียว, Co-owner สีส้ม
+                    child: const Icon(Icons.eco, color: Colors.white),
                   ),
                   title: Text(gardenName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: Text(isOwner ? "สถานะ: เจ้าของ" : "สถานะ: ทีมงาน"), 
+                  subtitle: Text(
+                    isPrimaryOwner ? "สถานะ: เจ้าของสูงสุด" 
+                    : (isCoOwner ? "สถานะ: ผู้ช่วยเจ้าของ" : "สถานะ: ทีมงาน")
+                  ), 
                   
-                  trailing: isOwner ? Row(
+                  // แสดงปุ่มถ้าเป็น Primary หรือ Co-Owner
+                  trailing: (isPrimaryOwner || isCoOwner) ? Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      // ปุ่มจัดการสมาชิก
                       IconButton(
                         icon: const Icon(Icons.people, color: Colors.blue),
                         tooltip: "จัดการสมาชิก",
                         onPressed: () => _manageMembers(docId),
                       ),
+                      // ปุ่มแก้ไขชื่อ
                       IconButton(
                         icon: const Icon(Icons.edit, color: Colors.orange),
                         tooltip: "แก้ไขชื่อ",
                         onPressed: () => _editProject(docId, gardenName),
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
-                        tooltip: "ลบโปรเจค",
-                        onPressed: () => _deleteProject(docId),
-                      ),
+                      
+                      // --- ปุ่มลบ (ทำงานต่างกันตาม Role) ---
+                      if (isPrimaryOwner) 
+                        // เจ้าของสูงสุด: ลบโปรเจค
+                        IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                          tooltip: "ลบโปรเจคถาวร",
+                          onPressed: () => _deleteProject(docId),
+                        )
+                      else if (isCoOwner)
+                        // Co-Owner: ออกจากโปรเจค (ใช้ไอคอน exit_to_app ให้สื่อความหมาย แต่ถ้าชอบถังขยะก็ใช้ delete ได้)
+                        IconButton(
+                          icon: const Icon(Icons.exit_to_app, color: Colors.redAccent), // เปลี่ยนไอคอนให้สื่อความหมาย
+                          tooltip: "ออกจากโปรเจค",
+                          onPressed: () => _leaveProject(docId, gardenName),
+                        ),
                     ],
                   ) : null, 
                   
