@@ -2,11 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart'; // 1. เพิ่ม import นี้
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart'; // แนะนำให้เพิ่ม package นี้เพื่อจัดรูปแบบเวลา (หรือใช้แบบธรรมดาก็ได้)
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final String gardenId;
+  final String inspectionDateId;
+
+  const HomePage({
+    super.key,
+    required this.gardenId,
+    required this.inspectionDateId,
+  });
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -14,195 +21,241 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final MapController _mapController = MapController();
-  LatLng _currentPosition = const LatLng(13.7563, 100.5018);
-  bool _isLoading = true;
-  bool _mapReady = false;
+  LatLng _currentPosition = const LatLng(13.7563, 100.5018); // พิกัดสำหรับปุ่มบันทึก
+  bool _isLoadingLocation = true;
 
   @override
   void initState() {
     super.initState();
-    _checkPermissionAndGetLocation();
+    _getCurrentLocation();
   }
 
-  Future<void> _checkPermissionAndGetLocation() async {
+  // ฟังก์ชันดึงพิกัดปัจจุบัน (เอาไว้สำหรับตอนกดปุ่ม + เพื่อบันทึกจุดใหม่)
+  Future<void> _getCurrentLocation() async {
     try {
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          _showError("กรุณาอนุญาตสิทธิ์การเข้าถึงตำแหน่ง");
-          return;
-        }
-      }
-
       Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 10),
       );
-
       if (mounted) {
         setState(() {
           _currentPosition = LatLng(position.latitude, position.longitude);
-          _isLoading = false;
+          _isLoadingLocation = false;
         });
-
-        if (_mapReady) {
-          _mapController.move(_currentPosition, 15.0);
-        }
+        // เลื่อนแผนที่ไปหาตำแหน่งปัจจุบันแค่ครั้งแรกพอ
+        _mapController.move(_currentPosition, 16.0);
       }
     } catch (e) {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        _showError("ไม่สามารถดึงตำแหน่งได้: $e");
-      }
+      print("Error getting location: $e");
     }
   }
 
-  // 2. ฟังก์ชันบันทึกข้อมูลลง Firestore
-  Future<void> _saveLocationToFirestore() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      _showError("กรุณาเข้าสู่ระบบก่อนบันทึกข้อมูล");
-      return;
-    }
-
+  // ฟังก์ชันบันทึกจุดใหม่ (New Point)
+  Future<void> _addNewPoint() async {
+    // อัปเดตพิกัดล่าสุดก่อนบันทึก
+    await _getCurrentLocation(); 
+    
     try {
-      // แสดง Loading ขณะบันทึก
-      showDialog(
-        context: context, 
-        barrierDismissible: false,
-        builder: (context) => const Center(child: CircularProgressIndicator())
+      await FirebaseFirestore.instance
+          .collection('gardens').doc(widget.gardenId)
+          .collection('inspections').doc(widget.inspectionDateId)
+          .collection('points').add({
+            'latitude': _currentPosition.latitude,
+            'longitude': _currentPosition.longitude,
+            'timestamp': FieldValue.serverTimestamp(),
+            'n_value': 0, // รอค่าจริง
+            'p_value': 0,
+            'k_value': 0,
+            'moisture': 0,
+          });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("เพิ่มจุดตรวจใหม่แล้ว!"), backgroundColor: Colors.green)
       );
-
-      // ส่งข้อมูลไปที่ Collection ชื่อ 'soil_data'
-      await FirebaseFirestore.instance.collection('soil_data').add({
-        'uid': user.uid, // เก็บว่าใครเป็นคนบันทึก
-        'email': user.email,
-        'latitude': _currentPosition.latitude,
-        'longitude': _currentPosition.longitude,
-        'timestamp': FieldValue.serverTimestamp(), // เวลาที่บันทึก
-        // 'moisture': 0, // (เตรียมไว้) รอรับค่าความชื้นจาก ESP32
-        // 'npk_value': 0, // (เตรียมไว้) รอรับค่า NPK
-      });
-
-      if (mounted) {
-        Navigator.pop(context); // ปิด Loading
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("บันทึกพิกัดสำเร็จ!"),
-            backgroundColor: Colors.green,
-          )
-        );
-      }
     } catch (e) {
-      if (mounted) {
-        Navigator.pop(context); // ปิด Loading
-        _showError("เกิดข้อผิดพลาด: $e");
-      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
     }
   }
 
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  // ฟังก์ชันแสดงรายละเอียดเมื่อกดที่หมุด
+  void _showMarkerDetails(Map<String, dynamic> data) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          height: 200,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("ข้อมูลจุดตรวจ", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              const Divider(),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _buildValueBox("N", "${data['n_value']}", Colors.blue),
+                  _buildValueBox("P", "${data['p_value']}", Colors.green),
+                  _buildValueBox("K", "${data['k_value']}", Colors.orange),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text("ความชื้น: ${data['moisture']}%"),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildValueBox(String label, String value, Color color) {
+    return Column(
+      children: [
+        Text(label, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 18)),
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: color),
+          ),
+          child: Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        ),
+      ],
+    );
+  }
+
+  // แปลง Timestamp เป็นเวลาที่อ่านง่าย
+  String _formatTime(Timestamp? timestamp) {
+    if (timestamp == null) return "-";
+    DateTime date = timestamp.toDate();
+    return "${date.hour}:${date.minute.toString().padLeft(2, '0')} น.";
   }
 
   @override
   Widget build(BuildContext context) {
+    // Stream หลักที่ดึงข้อมูลจุดตรวจทั้งหมดในวันนี้
+    var pointsStream = FirebaseFirestore.instance
+        .collection('gardens').doc(widget.gardenId)
+        .collection('inspections').doc(widget.inspectionDateId)
+        .collection('points')
+        .orderBy('timestamp', descending: true)
+        .snapshots();
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text("บันทึกพิกัดตรวจดิน"),
+        title: const Text("แผนที่และข้อมูลจุดตรวจ"),
         backgroundColor: Colors.green,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () => FirebaseAuth.instance.signOut(),
-          )
-        ],
       ),
-      body: Stack(
-        children: [
-          FlutterMap(
-            mapController: _mapController,
-            options: MapOptions(
-              initialCenter: _currentPosition,
-              initialZoom: 15.0,
-              minZoom: 3.0,
-              maxZoom: 18.0,
-              interactionOptions: const InteractionOptions(
-                flags: InteractiveFlag.all & ~InteractiveFlag.rotate, 
+      body: StreamBuilder<QuerySnapshot>(
+        stream: pointsStream,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) return Center(child: Text("Error: ${snapshot.error}"));
+          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+
+          var docs = snapshot.data!.docs;
+
+          // 1. เตรียม Marker สำหรับแผนที่
+          List<Marker> mapMarkers = docs.map((doc) {
+            var data = doc.data() as Map<String, dynamic>;
+            double lat = data['latitude'] ?? 0.0;
+            double long = data['longitude'] ?? 0.0;
+
+            return Marker(
+              point: LatLng(lat, long),
+              width: 40,
+              height: 40,
+              child: GestureDetector(
+                onTap: () => _showMarkerDetails(data), // กดแล้วโชว์ NPK
+                child: const Icon(Icons.location_on, color: Colors.red, size: 40),
               ),
-              onMapReady: () => setState(() => _mapReady = true),
+            );
+          }).toList();
+
+          // เพิ่ม Marker ตำแหน่งปัจจุบันเข้าไปด้วย (สีน้ำเงิน) จะได้รู้ว่าตัวเราอยู่ไหน
+          mapMarkers.add(
+            Marker(
+              point: _currentPosition,
+              width: 40,
+              height: 40,
+              child: const Icon(Icons.my_location, color: Colors.blue, size: 30), // ตัวเรา
             ),
+          );
+
+          return Column(
             children: [
-              TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.example.soil_app',
-                tileDisplay: const TileDisplay.fadeIn(duration: Duration(milliseconds: 300)),
-              ),
-              MarkerLayer(
-                markers: [
-                  Marker(
-                    point: _currentPosition,
-                    width: 45,
-                    height: 45,
-                    child: const Icon(Icons.location_on, color: Colors.red, size: 45),
+              // --- ส่วนที่ 1: แผนที่ (ครึ่งบน) ---
+              SizedBox(
+                height: MediaQuery.of(context).size.height * 0.45, // สูง 45% ของจอ
+                child: FlutterMap(
+                  mapController: _mapController,
+                  options: MapOptions(
+                    initialCenter: _currentPosition, // เริ่มต้นที่ตัวเรา
+                    initialZoom: 16.0,
                   ),
-                ],
-              ),
-            ],
-          ),
-          
-          // แถบแสดงพิกัด (ปรับให้เล็กลงหน่อย)
-          Positioned(
-            top: 15,
-            left: 15,
-            right: 15,
-            child: Card(
-              elevation: 4,
-              child: Padding(
-                padding: const EdgeInsets.all(10),
-                child: Text(
-                  "Lat: ${_currentPosition.latitude.toStringAsFixed(5)}, Lon: ${_currentPosition.longitude.toStringAsFixed(5)}",
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+                  children: [
+                    TileLayer(
+                      urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName: 'com.example.soil_app',
+                    ),
+                    MarkerLayer(markers: mapMarkers), // แสดงหมุดทั้งหมด
+                  ],
                 ),
               ),
-            ),
-          ),
 
-          // 3. ปุ่มบันทึกข้อมูล (อยู่ด้านล่าง)
-          Positioned(
-            bottom: 30,
-            left: 20,
-            right: 20,
-            child: ElevatedButton.icon(
-              onPressed: _saveLocationToFirestore,
-              icon: const Icon(Icons.save),
-              label: const Text("บันทึกตำแหน่งนี้", style: TextStyle(fontSize: 18)),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.green,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+              // --- ส่วนที่ 2: รายการข้อมูล (ครึ่งล่าง) ---
+              Container(
+                padding: const EdgeInsets.all(10),
+                color: Colors.green[50],
+                width: double.infinity,
+                child: Text(
+                  "รายการตรวจ (${docs.length} จุด)", 
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)
+                ),
               ),
-            ),
-          ),
-
-          if (_isLoading)
-            Container(
-              color: Colors.white.withOpacity(0.8),
-              child: const Center(child: CircularProgressIndicator()),
-            ),
-        ],
+              Expanded(
+                child: ListView.builder(
+                  itemCount: docs.length,
+                  itemBuilder: (context, index) {
+                    var data = docs[index].data() as Map<String, dynamic>;
+                    
+                    return Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: Colors.green,
+                          child: Text("${index + 1}", style: const TextStyle(color: Colors.white)),
+                        ),
+                        title: Text("เวลา: ${_formatTime(data['timestamp'])}"),
+                        subtitle: Row(
+                          children: [
+                            Text("N: ${data['n_value']} ", style: TextStyle(color: Colors.blue[800], fontWeight: FontWeight.bold)),
+                            Text("P: ${data['p_value']} ", style: TextStyle(color: Colors.green[800], fontWeight: FontWeight.bold)),
+                            Text("K: ${data['k_value']}", style: TextStyle(color: Colors.orange[800], fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                        onTap: () {
+                          // กดที่ลิสต์แล้วเลื่อนแผนที่ไปหาจุดนั้น
+                          _mapController.move(
+                            LatLng(data['latitude'], data['longitude']), 
+                            18.0
+                          );
+                        },
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          );
+        },
       ),
-      // ปุ่มรีเฟรช GPS ย้ายไปมุมขวาล่างเหนือปุ่มบันทึก
-      floatingActionButton: Padding(
-        padding: const EdgeInsets.only(bottom: 60),
-        child: FloatingActionButton(
-          onPressed: _checkPermissionAndGetLocation,
-          backgroundColor: Colors.white,
-          child: const Icon(Icons.my_location, color: Colors.green),
-        ),
+      
+      // ปุ่มบวก ลอยอยู่มุมขวาล่างเหมือนเดิม
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _addNewPoint,
+        label: const Text("บันทึกจุดนี้"),
+        icon: const Icon(Icons.add_location_alt),
+        backgroundColor: Colors.green,
       ),
     );
   }

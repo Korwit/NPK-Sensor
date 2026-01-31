@@ -4,7 +4,7 @@ import 'firebase_options.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'login_page.dart';
 import 'home_page.dart';
-
+import 'projects_page.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(
@@ -49,7 +49,7 @@ class AuthGate extends StatelessWidget {
 
         // หากมีข้อมูล User (ล็อกอินแล้ว) ให้ไปหน้า HomePage
         if (snapshot.hasData) {
-          return const HomePage();
+          return const ProjectsPage();
         }
 
         // หากไม่มีข้อมูล User (ยังไม่ล็อกอิน) ให้ไปหน้า LoginPage
