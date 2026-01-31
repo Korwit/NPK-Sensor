@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // [เพิ่ม] Import Firestore
 import 'register_page.dart';
 
 class LoginPage extends StatefulWidget {
@@ -14,7 +15,7 @@ class _LoginPageState extends State<LoginPage> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _rememberMe = false;
-  bool _isLoading = false; // เพิ่มสถานะการโหลด
+  bool _isLoading = false;
 
   @override
   void initState() {
@@ -22,7 +23,6 @@ class _LoginPageState extends State<LoginPage> {
     _loadUserEmail();
   }
 
-  // คืนหน่วยความจำเมื่อเลิกใช้งาน
   @override
   void dispose() {
     _emailController.dispose();
@@ -62,23 +62,33 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => _isLoading = true);
 
     try {
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
+      // 1. สั่งล็อกอินกับ Firebase Auth
+      UserCredential userCredential = await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
 
+      // --- [Step 1: เพิ่มโค้ดส่วนนี้] ---
+      // บันทึกข้อมูลลงสมุดหน้าเหลือง (Users Collection) เพื่อให้เพื่อนค้นหาเจอ
+      if (userCredential.user != null) {
+        await FirebaseFirestore.instance.collection('users').doc(userCredential.user!.uid).set({
+          'uid': userCredential.user!.uid,
+          'email': userCredential.user!.email,
+          'last_login': FieldValue.serverTimestamp(), // เก็บเวลาล่าสุดที่เข้าใช้งาน
+        }, SetOptions(merge: true)); // merge: true แปลว่าถ้ามีอยู่แล้วให้อัปเดต ไม่ทับข้อมูลเดิม
+      }
+      // -------------------------------
+
       await _handleRememberMe();
 
-      // ไม่ต้องสั่งเปลี่ยนหน้าเอง เพราะ AuthGate ใน main.dart จะจัดการให้เมื่อสถานะเปลี่ยน
+      // ไม่ต้องสั่งเปลี่ยนหน้าเอง AuthGate จัดการให้
     } on FirebaseAuthException catch (e) {
       if (mounted) {
         String errorMessage = "อีเมลหรือรหัสผ่านไม่ถูกต้อง";
         if (e.code == 'user-not-found') errorMessage = "ไม่พบผู้ใช้งานนี้";
         if (e.code == 'wrong-password') errorMessage = "รหัสผ่านไม่ถูกต้อง";
 
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(errorMessage)));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errorMessage)));
       }
     } catch (e) {
       if (mounted) {
@@ -93,58 +103,51 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  // --- เพิ่มฟังก์ชันรีเซ็ตรหัสผ่าน ---
-Future<void> resetPassword() async {
-  final email = _emailController.text.trim();
-  
-  if (email.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("กรุณากรอกอีเมลก่อนกดลืมรหัสผ่าน")),
-    );
-    return;
-  }
-
-  try {
-    // ส่งคำขอรีเซ็ตรหัสผ่าน
-    await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+  Future<void> resetPassword() async {
+    final email = _emailController.text.trim();
     
-    if (mounted) {
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text("ตรวจสอบอีเมลของคุณ"),
-          content: Text("ระบบได้ส่งลิงก์สำหรับตั้งรหัสผ่านใหม่ไปที่ $email เรียบร้อยแล้ว"),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("ตกลง"),
-            ),
-          ],
-        ),
-      );
-    }
-  } on FirebaseAuthException catch (e) {
-    if (mounted) {
-      String message = "เกิดข้อผิดพลาด";
-      
-      // ดักจับกรณีไม่พบอีเมลในระบบ
-      if (e.code == 'user-not-found') {
-        message = "ไม่พบอีเมลนี้ในระบบ กรุณาตรวจสอบการสะกดหรือสมัครสมาชิกใหม่";
-      } else if (e.code == 'invalid-email') {
-        message = "รูปแบบอีเมลไม่ถูกต้อง";
-      } else {
-        message = e.message ?? "ไม่สามารถส่งอีเมลได้ในขณะนี้";
-      }
-
+    if (email.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message), backgroundColor: Colors.red),
+        const SnackBar(content: Text("กรุณากรอกอีเมลก่อนกดลืมรหัสผ่าน")),
       );
+      return;
+    }
+
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text("ตรวจสอบอีเมลของคุณ"),
+            content: Text("ระบบได้ส่งลิงก์สำหรับตั้งรหัสผ่านใหม่ไปที่ $email เรียบร้อยแล้ว"),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("ตกลง"),
+              ),
+            ],
+          ),
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        String message = "เกิดข้อผิดพลาด";
+        if (e.code == 'user-not-found') {
+          message = "ไม่พบอีเมลนี้ในระบบ";
+        } else if (e.code == 'invalid-email') {
+          message = "รูปแบบอีเมลไม่ถูกต้อง";
+        } else {
+          message = e.message ?? "ไม่สามารถส่งอีเมลได้";
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message), backgroundColor: Colors.red),
+        );
+      }
     }
   }
-}
 
-
-  // --- ส่วนปรับปรุง UI ใน Widget build ---
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -158,7 +161,6 @@ Future<void> resetPassword() async {
               const Icon(Icons.eco, size: 100, color: Colors.green),
               const SizedBox(height: 30),
 
-              // ช่องกรอก Email
               TextField(
                 controller: _emailController,
                 decoration: const InputDecoration(
@@ -170,7 +172,6 @@ Future<void> resetPassword() async {
               ),
               const SizedBox(height: 15),
 
-              // ช่องกรอก Password
               TextField(
                 controller: _passwordController,
                 decoration: const InputDecoration(
@@ -181,7 +182,6 @@ Future<void> resetPassword() async {
                 obscureText: true,
               ),
 
-              // --- แถว Remember Me และ Forgot Password ---
               Row(
                 children: [
                   Checkbox(
@@ -193,7 +193,7 @@ Future<void> resetPassword() async {
                     },
                   ),
                   const Text("จดจำอีเมล"),
-                  const Spacer(), // ใช้ Spacer ดันปุ่มไปทางขวาสุด
+                  const Spacer(),
                   TextButton(
                     onPressed: resetPassword,
                     child: const Text(
@@ -204,7 +204,6 @@ Future<void> resetPassword() async {
                 ],
               ),
 
-              // ------------------------------------------
               const SizedBox(height: 10),
               SizedBox(
                 width: double.infinity,

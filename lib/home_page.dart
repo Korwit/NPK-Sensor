@@ -3,16 +3,17 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:intl/intl.dart'; 
 
 class HomePage extends StatefulWidget {
   final String gardenId;
   final String inspectionDateId;
+  final String userRole; // รับ Role มาเพื่อเช็คสิทธิ์
 
   const HomePage({
     super.key,
     required this.gardenId,
     required this.inspectionDateId,
+    required this.userRole,
   });
 
   @override
@@ -70,6 +71,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  // ฟังก์ชันลบ (ใช้ได้เฉพาะ Owner)
   void _deletePoint(String docId) {
     showDialog(
       context: context,
@@ -77,10 +79,7 @@ class _HomePageState extends State<HomePage> {
         title: const Text("ยืนยันการลบ"),
         content: const Text("ต้องการลบจุดตรวจนี้ใช่ไหม?"),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("ยกเลิก"),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("ยกเลิก")),
           TextButton(
             onPressed: () async {
               await FirebaseFirestore.instance
@@ -88,14 +87,11 @@ class _HomePageState extends State<HomePage> {
                   .collection('inspections').doc(widget.inspectionDateId)
                   .collection('points').doc(docId).delete();
               
-              setState(() {
-                _selectedIndex = null;
-              });
-
+              setState(() => _selectedIndex = null);
               if (mounted) Navigator.pop(context);
               
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("ลบข้อมูลเรียบร้อย"), backgroundColor: Colors.redAccent)
+                const SnackBar(content: Text("ลบเรียบร้อย"), backgroundColor: Colors.redAccent)
               );
             },
             style: TextButton.styleFrom(foregroundColor: Colors.red),
@@ -107,6 +103,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _showMarkerDetails(String docId, Map<String, dynamic> data) {
+    // เช็คสิทธิ์ก่อนแสดงปุ่มลบใน Modal
+    bool isOwner = (widget.userRole == 'owner');
+
     showModalBottomSheet(
       context: context,
       builder: (context) {
@@ -120,13 +119,15 @@ class _HomePageState extends State<HomePage> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text("ข้อมูลจุดตรวจ", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                  IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.red),
-                    onPressed: () {
-                      Navigator.pop(context);
-                      _deletePoint(docId);
-                    },
-                  )
+                  // ปุ่มลบ: แสดงเฉพาะ Owner
+                  if (isOwner)
+                    IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.red),
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _deletePoint(docId);
+                      },
+                    )
                 ],
               ),
               const Divider(),
@@ -165,9 +166,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _selectPoint(int index, LatLng location) {
-    setState(() {
-      _selectedIndex = index;
-    });
+    setState(() => _selectedIndex = index);
     _mapController.move(location, 18.0);
   }
 
@@ -179,6 +178,9 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    // เช็คสิทธิ์เพื่อใช้แสดงปุ่มลบใน List
+    bool isOwner = (widget.userRole == 'owner');
+
     return Scaffold(
       appBar: AppBar(
         title: const Text("แผนที่และข้อมูลจุดตรวจ"),
@@ -234,7 +236,6 @@ class _HomePageState extends State<HomePage> {
 
           return Column(
             children: [
-              // --- แผนที่ ---
               SizedBox(
                 height: MediaQuery.of(context).size.height * 0.45,
                 child: FlutterMap(
@@ -253,8 +254,6 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
               ),
-
-              // --- รายการข้อมูล ---
               Container(
                 padding: const EdgeInsets.all(10),
                 color: Colors.green[50],
@@ -263,8 +262,7 @@ class _HomePageState extends State<HomePage> {
               ),
               Expanded(
                 child: ListView.builder(
-                  // *** จุดที่แก้ไข: เพิ่ม padding ด้านล่าง 100 หน่วย ***
-                  padding: const EdgeInsets.only(bottom: 100), 
+                  padding: const EdgeInsets.only(bottom: 100), // ดันก้นหนีปุ่มบวก
                   itemCount: docs.length,
                   itemBuilder: (context, index) {
                     var data = docs[index].data() as Map<String, dynamic>;
@@ -287,18 +285,14 @@ class _HomePageState extends State<HomePage> {
                         title: Text("เวลา: ${_formatTime(data['timestamp'])}"),
                         subtitle: Text("N: ${data['n_value']} P: ${data['p_value']} K: ${data['k_value']}"),
                         
-                        trailing: IconButton(
+                        // ปุ่มลบใน List: แสดงเฉพาะ Owner
+                        trailing: isOwner ? IconButton(
                           icon: const Icon(Icons.delete, color: Colors.red),
-                          onPressed: () {
-                            _deletePoint(docId);
-                          },
-                        ),
+                          onPressed: () => _deletePoint(docId),
+                        ) : null, // Worker จะไม่เห็นปุ่มนี้
 
                         onTap: () {
-                          _selectPoint(
-                            index, 
-                            LatLng(data['latitude'], data['longitude']),
-                          );
+                          _selectPoint(index, LatLng(data['latitude'], data['longitude']));
                         },
                       ),
                     );
