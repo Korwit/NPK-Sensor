@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+// [สำคัญ] ต้อง import localization เพื่อรองรับภาษาไทย
+import 'package:flutter_localizations/flutter_localizations.dart'; 
+
 import 'login_page.dart';
-import 'home_page.dart';
-import 'projects_page.dart';
+import 'projects_page.dart'; // ใช้ ProjectsPage เป็นหน้าแรกหลัง Login
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(
@@ -22,9 +25,21 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false, // ปิดแถบ Debug
       title: 'ระบบตรวจคุณภาพวัดดิน',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.green), // เปลี่ยนเป็นสีเขียวให้เข้ากับธีมตรวจดิน
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.green), // ธีมสีเขียว
         useMaterial3: true,
       ),
+      
+      // --- [ส่วนที่เพิ่ม] ตั้งค่าภาษาไทย ---
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('th', 'TH'), // บังคับให้แอปใช้ภาษาไทย (ปฏิทินจะเป็น พ.ศ. อัตโนมัติ)
+      ],
+      // ----------------------------------
+
       // ใช้ StreamBuilder เพื่อดักฟังสถานะการ Login
       home: const AuthGate(),
     );
@@ -47,7 +62,7 @@ class AuthGate extends StatelessWidget {
           );
         }
 
-        // หากมีข้อมูล User (ล็อกอินแล้ว) ให้ไปหน้า HomePage
+        // หากมีข้อมูล User (ล็อกอินแล้ว) ให้ไปหน้าเลือกโปรเจค (ProjectsPage)
         if (snapshot.hasData) {
           return const ProjectsPage();
         }

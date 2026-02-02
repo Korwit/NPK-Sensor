@@ -3,11 +3,12 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart'; // อย่าลืม import intl
 
 class HomePage extends StatefulWidget {
   final String gardenId;
   final String inspectionDateId;
-  final String userRole; // รับ Role มาเพื่อเช็คสิทธิ์
+  final String userRole;
 
   const HomePage({
     super.key,
@@ -24,8 +25,6 @@ class _HomePageState extends State<HomePage> {
   final MapController _mapController = MapController();
   LatLng _currentPosition = const LatLng(13.7563, 100.5018);
   bool _isLoadingLocation = true;
-  
-  // จำว่าเลือกหมุดไหนอยู่
   int? _selectedIndex;
 
   @override
@@ -51,6 +50,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  // เพิ่มจุดตรวจ (บันทึก timestamp เต็มๆ ซึ่งมีวันที่อยู่แล้ว)
   Future<void> _addNewPoint() async {
     await _getCurrentLocation(); 
     try {
@@ -60,18 +60,17 @@ class _HomePageState extends State<HomePage> {
           .collection('points').add({
             'latitude': _currentPosition.latitude,
             'longitude': _currentPosition.longitude,
-            'timestamp': FieldValue.serverTimestamp(),
+            'timestamp': FieldValue.serverTimestamp(), // บันทึกวันและเวลาปัจจุบัน
             'n_value': 0, 'p_value': 0, 'k_value': 0, 'moisture': 0,
           });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("เพิ่มจุดตรวจใหม่แล้ว!"), backgroundColor: Colors.green)
+        const SnackBar(content: Text("บันทึกจุดตรวจแล้ว!"), backgroundColor: Colors.green)
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
     }
   }
 
-  // ฟังก์ชันลบ (ใช้ได้เฉพาะ Owner)
   void _deletePoint(String docId) {
     showDialog(
       context: context,
@@ -102,8 +101,15 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  // [แก้ไข] ฟังก์ชันแปลงเวลาให้โชว์วันที่ด้วย
+  String _formatDateTime(Timestamp? timestamp) {
+    if (timestamp == null) return "-";
+    DateTime date = timestamp.toDate();
+    // รูปแบบ: 01/02/2026 14:30
+    return DateFormat('dd/MM/yyyy HH:mm').format(date);
+  }
+
   void _showMarkerDetails(String docId, Map<String, dynamic> data) {
-    // เช็คสิทธิ์ก่อนแสดงปุ่มลบใน Modal
     bool isOwner = (widget.userRole == 'owner');
 
     showModalBottomSheet(
@@ -111,15 +117,21 @@ class _HomePageState extends State<HomePage> {
       builder: (context) {
         return Container(
           padding: const EdgeInsets.all(20),
-          height: 250,
+          height: 300, // เพิ่มความสูงนิดหน่อย
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text("ข้อมูลจุดตรวจ", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                  // ปุ่มลบ: แสดงเฉพาะ Owner
+                  // แสดงหัวข้อเป็นวันที่และเวลา
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text("ข้อมูลจุดตรวจ", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      Text(_formatDateTime(data['timestamp']), style: const TextStyle(fontSize: 14, color: Colors.grey)),
+                    ],
+                  ),
                   if (isOwner)
                     IconButton(
                       icon: const Icon(Icons.delete, color: Colors.red),
@@ -131,6 +143,7 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
               const Divider(),
+              const SizedBox(height: 10),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
@@ -139,8 +152,8 @@ class _HomePageState extends State<HomePage> {
                   _buildValueBox("K", "${data['k_value']}", Colors.orange),
                 ],
               ),
-              const SizedBox(height: 10),
-              Text("ความชื้น: ${data['moisture']}%"),
+              const SizedBox(height: 20),
+              Center(child: Text("ความชื้น: ${data['moisture']}%", style: const TextStyle(fontSize: 16))),
             ],
           ),
         );
@@ -153,7 +166,7 @@ class _HomePageState extends State<HomePage> {
       children: [
         Text(label, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 18)),
         Container(
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           decoration: BoxDecoration(
             color: color.withOpacity(0.1),
             borderRadius: BorderRadius.circular(8),
@@ -170,15 +183,8 @@ class _HomePageState extends State<HomePage> {
     _mapController.move(location, 18.0);
   }
 
-  String _formatTime(Timestamp? timestamp) {
-    if (timestamp == null) return "-";
-    DateTime date = timestamp.toDate();
-    return "${date.hour}:${date.minute.toString().padLeft(2, '0')} น.";
-  }
-
   @override
   Widget build(BuildContext context) {
-    // เช็คสิทธิ์เพื่อใช้แสดงปุ่มลบใน List
     bool isOwner = (widget.userRole == 'owner');
 
     return Scaffold(
@@ -225,14 +231,16 @@ class _HomePageState extends State<HomePage> {
             );
           }
 
-          mapMarkers.add(
-            Marker(
-              point: _currentPosition,
-              width: 40,
-              height: 40,
-              child: const Icon(Icons.my_location, color: Colors.blue, size: 30),
-            ),
-          );
+          if (!_isLoadingLocation) {
+            mapMarkers.add(
+              Marker(
+                point: _currentPosition,
+                width: 40,
+                height: 40,
+                child: const Icon(Icons.my_location, color: Colors.blue, size: 30),
+              ),
+            );
+          }
 
           return Column(
             children: [
@@ -262,7 +270,7 @@ class _HomePageState extends State<HomePage> {
               ),
               Expanded(
                 child: ListView.builder(
-                  padding: const EdgeInsets.only(bottom: 100), // ดันก้นหนีปุ่มบวก
+                  padding: const EdgeInsets.only(bottom: 100),
                   itemCount: docs.length,
                   itemBuilder: (context, index) {
                     var data = docs[index].data() as Map<String, dynamic>;
@@ -282,14 +290,14 @@ class _HomePageState extends State<HomePage> {
                           backgroundColor: isSelected ? Colors.blue : Colors.green,
                           child: Text("${index + 1}", style: const TextStyle(color: Colors.white)),
                         ),
-                        title: Text("เวลา: ${_formatTime(data['timestamp'])}"),
+                        // [แก้ไข] แสดงวันที่และเวลาตรงนี้
+                        title: Text("บันทึกเมื่อ: ${_formatDateTime(data['timestamp'])}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                         subtitle: Text("N: ${data['n_value']} P: ${data['p_value']} K: ${data['k_value']}"),
                         
-                        // ปุ่มลบใน List: แสดงเฉพาะ Owner
                         trailing: isOwner ? IconButton(
                           icon: const Icon(Icons.delete, color: Colors.red),
                           onPressed: () => _deletePoint(docId),
-                        ) : null, // Worker จะไม่เห็นปุ่มนี้
+                        ) : null,
 
                         onTap: () {
                           _selectPoint(index, LatLng(data['latitude'], data['longitude']));

@@ -13,7 +13,7 @@ class ProjectsPage extends StatefulWidget {
 class _ProjectsPageState extends State<ProjectsPage> {
   User? get user => FirebaseAuth.instance.currentUser;
 
-  // --- 1. ฟังก์ชันสร้างโปรเจคใหม่ (ตัด nicknames ออก) ---
+  // --- 1. ฟังก์ชันสร้างโปรเจคใหม่ ---
   void _createNewProject() {
     TextEditingController nameController = TextEditingController();
     showDialog(
@@ -36,7 +36,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                   'owner_uid': user?.uid,
                   'members': [user?.uid],
                   'roles': {user?.uid: 'owner'},
-                  // 'nicknames': ... ตัดออกแล้ว! ไม่เก็บในสวนแล้ว
+                  'nicknames': {user?.uid: 'ฉัน (เจ้าของสูงสุด)'}, // ยังเก็บใน Garden อยู่
                   'created_at': FieldValue.serverTimestamp(),
                 });
                 Navigator.pop(context);
@@ -49,10 +49,9 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
-  // --- 2. ฟังก์ชันจัดการสมุดรายชื่อ (หัวใจหลักของการเก็บชื่อ) ---
+  // --- 2. ฟังก์ชันจัดการสมุดรายชื่อ (Contacts) ---
   Future<void> _updateContactInfo(String friendUid, String email, String? nickname) async {
-    // ถ้าชื่อเล่นว่างเปล่า -> ไม่บันทึกชื่อ แต่บันทึก email ไว้
-    // หรือถ้าอยากให้ลบชื่อเก่าออก ก็ส่ง "" มา
+    // บันทึก/อัปเดต รายชื่อเพื่อนลง Sub-collection
     await FirebaseFirestore.instance
         .collection('users').doc(user!.uid)
         .collection('contacts').doc(friendUid)
@@ -146,7 +145,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
               await FirebaseFirestore.instance.collection('gardens').doc(docId).update({
                 'members': FieldValue.arrayRemove([memberUid]),
                 'roles.$memberUid': FieldValue.delete(),
-                // ไม่ต้องลบ nicknames ในสวนแล้ว เพราะไม่มีแล้ว
+                'nicknames.$memberUid': FieldValue.delete(), // ลบชื่อในสวนทิ้งด้วย
               });
               if (mounted) Navigator.pop(context); 
             },
@@ -158,7 +157,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
-  // --- 4. ฟังก์ชันจัดการ: เปลี่ยน Role (สวน) + เปลี่ยนชื่อ (Contact ส่วนตัว) ---
+  // --- 4. ฟังก์ชันจัดการ: เปลี่ยน Role + แก้ชื่อ (Sync Garden & Contact) ---
   void _editMemberInfo(String docId, String memberUid, String currentRole, String? currentNickname, String email) {
     String newRole = currentRole;
     TextEditingController nicknameController = TextEditingController(text: currentNickname ?? "");
@@ -173,20 +172,20 @@ class _ProjectsPageState extends State<ProjectsPage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text("ชื่อเล่น (ส่วนตัว)", style: TextStyle(fontWeight: FontWeight.bold)),
+                const Text("ชื่อเล่น", style: TextStyle(fontWeight: FontWeight.bold)),
                 TextField(
                   controller: nicknameController,
                   decoration: const InputDecoration(
-                    hintText: "ชื่อที่คุณเรียกคนนี้",
+                    hintText: "ชื่อเล่นในโปรเจคนี้",
                     isDense: true,
                     prefixIcon: Icon(Icons.edit, size: 18),
-                    helperText: "บันทึกลงสมุดรายชื่อส่วนตัวของคุณ",
+                    helperText: "จะอัปเดตในสมุดรายชื่อของคุณด้วย", // แจ้งผู้ใช้
                     helperStyle: TextStyle(color: Colors.blue),
                   ),
                 ),
                 const SizedBox(height: 20),
 
-                const Text("ตำแหน่งในสวนนี้", style: TextStyle(fontWeight: FontWeight.bold)),
+                const Text("ตำแหน่ง", style: TextStyle(fontWeight: FontWeight.bold)),
                 RadioListTile<String>(
                   title: const Text("ทีมงาน (Worker)"),
                   subtitle: const Text("เพิ่มจุดตรวจได้เท่านั้น"),
@@ -212,14 +211,27 @@ class _ProjectsPageState extends State<ProjectsPage> {
             TextButton(onPressed: () => Navigator.pop(context), child: const Text("ยกเลิก")),
             ElevatedButton(
               onPressed: () async {
-                // 1. อัปเดต Role ใน Garden (Shared)
-                await FirebaseFirestore.instance.collection('gardens').doc(docId).update({
+                // 1. เตรียมข้อมูลอัปเดตใน Garden
+                Map<String, dynamic> updates = {
                   'roles.$memberUid': newRole,
-                });
+                };
                 
-                // 2. อัปเดต Nickname ใน Contacts (Private)
-                String newName = nicknameController.text.trim();
-                await _updateContactInfo(memberUid, email, newName); // บันทึกเสมอไม่ว่าจะว่างหรือไม่
+                String newNickname = nicknameController.text.trim();
+                
+                // อัปเดตชื่อใน Garden (เหมือนเดิม)
+                if (newNickname.isNotEmpty) {
+                  updates['nicknames.$memberUid'] = newNickname;
+                } else {
+                  updates['nicknames.$memberUid'] = FieldValue.delete();
+                }
+
+                await FirebaseFirestore.instance.collection('gardens').doc(docId).update(updates);
+                
+                // 2. [เพิ่ม] ซิงค์ไปที่ Contacts ด้วย (ถ้ามีชื่อ)
+                // ตรวจสอบก่อนว่าเคยมีคนนี้ใน contacts หรือไม่ ถ้ามีก็อัปเดตชื่อ ถ้าไม่มีก็เพิ่ม
+                if (newNickname.isNotEmpty) {
+                   await _updateContactInfo(memberUid, email, newNickname);
+                }
 
                 if (mounted) {
                    Navigator.pop(context);
@@ -240,7 +252,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
     TextEditingController emailTextController = TextEditingController(); 
     TextEditingController nicknameController = TextEditingController();
     String selectedRole = 'worker';
-    bool saveToContacts = true; // ตั้ง Default เป็น true เลยก็ได้เพื่อความสะดวก
+    bool saveToContacts = true; 
 
     showDialog(
       context: context,
@@ -253,6 +265,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
             var gardenData = snapshot.data!.data() as Map<String, dynamic>;
             List<dynamic> members = gardenData['members'] ?? [];
             Map<String, dynamic> roles = gardenData['roles'] ?? {};
+            Map<String, dynamic> nicknames = gardenData['nicknames'] ?? {};
             String primaryOwnerUid = gardenData['owner_uid'] ?? ""; 
 
             return AlertDialog(
@@ -275,8 +288,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                 child: Autocomplete<String>(
                                   optionsBuilder: (TextEditingValue textEditingValue) async {
                                     if (textEditingValue.text.length < 3) return const Iterable<String>.empty();
-                                    // ค้นหาจาก Contact เราก่อน (จะได้เจอชื่อเล่น) หรือ Users ทั้งหมดก็ได้
-                                    // ในที่นี้ค้นจาก Users ทั้งหมดเพื่อให้เจอคนใหม่ๆ
+                                    // ค้นหาจาก Users ทั้งหมด
                                     var querySnapshot = await FirebaseFirestore.instance
                                         .collection('users')
                                         .where('email', isGreaterThanOrEqualTo: textEditingValue.text)
@@ -331,7 +343,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                           TextField(
                             controller: nicknameController,
                             decoration: const InputDecoration(
-                              labelText: "ชื่อเล่น (ส่วนตัว)",
+                              labelText: "ชื่อเล่นในโปรเจคนี้",
                               hintText: "เช่น ช่างสมชาย",
                               prefixIcon: Icon(Icons.badge_outlined),
                               border: OutlineInputBorder(),
@@ -397,13 +409,16 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                        return;
                                     }
 
-                                    // 1. เพิ่มเข้า Garden (Shared) - *ไม่มี nickname แล้ว*
-                                    await FirebaseFirestore.instance.collection('gardens').doc(docId).update({
+                                    // 1. เพิ่มเข้า Garden (Shared) - เก็บ nickname ด้วย
+                                    Map<String, dynamic> updateData = {
                                       'members': FieldValue.arrayUnion([friendUid]),
                                       'roles.$friendUid': selectedRole,
-                                    });
+                                    };
+                                    if (nickname.isNotEmpty) updateData['nicknames.$friendUid'] = nickname;
+
+                                    await FirebaseFirestore.instance.collection('gardens').doc(docId).update(updateData);
                                     
-                                    // 2. บันทึกลง Contacts (Private) - *เก็บ nickname ที่นี่*
+                                    // 2. บันทึกลง Contacts (Private)
                                     if (saveToContacts || nickname.isNotEmpty) {
                                       await _updateContactInfo(friendUid, email, nickname);
                                     }
@@ -442,39 +457,20 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                   itemBuilder: (context, index) {
                                     String memberUid = members[index];
                                     String role = roles[memberUid] ?? 'worker';
+                                    // ใช้ nickname จาก Garden เป็นหลักก่อน
+                                    String? nickname = nicknames[memberUid];
                                     bool isMe = (memberUid == user?.uid);
                                     bool isPrimaryOwner = (memberUid == primaryOwnerUid);
 
-                                    // ตรงนี้สำคัญ! ต้องดึงข้อมูลจาก Contacts ของเรามาแสดง (ไม่ใช่จาก Garden)
-                                    return StreamBuilder<DocumentSnapshot>(
-                                      stream: FirebaseFirestore.instance
-                                          .collection('users').doc(user!.uid)
-                                          .collection('contacts').doc(memberUid)
-                                          .snapshots(), // ฟัง Contact เราก่อน
-                                      builder: (context, contactSnap) {
-                                        
-                                        // ถ้ามีใน Contact -> ใช้ชื่อจาก Contact
-                                        // ถ้าไม่มี -> ไปดึง Email จาก Users กลาง
-                                        
-                                        if (contactSnap.hasData && contactSnap.data!.exists) {
-                                          // มี Contact: ใช้ข้อมูลส่วนตัวเรา
-                                          var cData = contactSnap.data!.data() as Map<String, dynamic>;
-                                          String nickname = cData['nickname'] ?? "";
-                                          String email = cData['email'] ?? "...";
-                                          return _buildMemberTile(docId, memberUid, role, email, nickname, isMe, isPrimaryOwner);
-                                        } else {
-                                          // ไม่มี Contact: ไปดึง User กลาง
-                                          return FutureBuilder<DocumentSnapshot>(
-                                            future: FirebaseFirestore.instance.collection('users').doc(memberUid).get(),
-                                            builder: (context, userSnap) {
-                                              String email = "...";
-                                              if (userSnap.hasData && userSnap.data!.exists) {
-                                                email = userSnap.data!.get('email') ?? "ไม่มีอีเมล";
-                                              }
-                                              return _buildMemberTile(docId, memberUid, role, email, "", isMe, isPrimaryOwner);
-                                            },
-                                          );
+                                    return FutureBuilder<DocumentSnapshot>(
+                                      future: FirebaseFirestore.instance.collection('users').doc(memberUid).get(),
+                                      builder: (context, userSnap) {
+                                        String email = "...";
+                                        if (userSnap.hasData && userSnap.data!.exists) {
+                                          email = userSnap.data!.get('email') ?? "ไม่มีอีเมล";
                                         }
+
+                                        return _buildMemberTile(docId, memberUid, role, email, nickname ?? "", isMe, isPrimaryOwner);
                                       },
                                     );
                                   },
@@ -498,13 +494,14 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
-  // --- Helper Widget สำหรับสร้าง ListTile สมาชิก (จะได้ไม่เขียนซ้ำ) ---
+  // --- Helper Widget สำหรับสร้าง ListTile สมาชิก ---
   Widget _buildMemberTile(String docId, String memberUid, String role, String email, String nickname, bool isMe, bool isPrimaryOwner) {
     String titleToShow = (nickname.isNotEmpty) ? nickname : email;
     String roleText;
     
-    if (isPrimaryOwner) roleText = "เจ้าของสูงสุด";
-    else if (role == 'owner') roleText = "ผู้ช่วย";
+    if (isPrimaryOwner) {
+      roleText = "เจ้าของสูงสุด";
+    } else if (role == 'owner') roleText = "ผู้ช่วย";
     else roleText = "ทีมงาน";
 
     String subtitleToShow = (nickname.isNotEmpty) ? "$email • $roleText" : roleText;
@@ -613,7 +610,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
               await FirebaseFirestore.instance.collection('gardens').doc(docId).update({
                 'members': FieldValue.arrayRemove([user!.uid]),
                 'roles.${user!.uid}': FieldValue.delete(),
-                // ไม่ต้องลบ nicknames เพราะไม่มีแล้ว
+                'nicknames.${user!.uid}': FieldValue.delete(),
               });
               if (mounted) Navigator.pop(context);
             },
