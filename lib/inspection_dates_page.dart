@@ -432,7 +432,7 @@ class InspectionDatesPage extends StatelessWidget {
             itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
               const PopupMenuItem<String>(
                 value: 'select',
-                child: Row(children: [Icon(Icons.check_box_outlined, color: Colors.green), SizedBox(width: 10), Text('เลือกเพื่อดดดดดโหลดลงเครื่อง')]),
+                child: Row(children: [Icon(Icons.check_box_outlined, color: Colors.green), SizedBox(width: 10), Text('เลือกเพื่อโหลดลงเครื่อง')]),
               ),
               const PopupMenuItem<String>(
                 value: 'all',

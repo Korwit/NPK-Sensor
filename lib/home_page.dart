@@ -3,7 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:intl/intl.dart'; // อย่าลืม import intl
+import 'package:intl/intl.dart';
 
 class HomePage extends StatefulWidget {
   final String gardenId;
@@ -26,6 +26,9 @@ class _HomePageState extends State<HomePage> {
   LatLng _currentPosition = const LatLng(13.7563, 100.5018);
   bool _isLoadingLocation = true;
   int? _selectedIndex;
+  
+  // [เพิ่ม] ตัวแปรเก็บสถานะการเรียงลำดับ (Default: true = ใหม่สุดขึ้นก่อน)
+  bool _isDescending = true; 
 
   @override
   void initState() {
@@ -35,9 +38,19 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _getCurrentLocation() async {
     try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) return;
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) return;
+      }
+
       Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
+
       if (mounted) {
         setState(() {
           _currentPosition = LatLng(position.latitude, position.longitude);
@@ -46,28 +59,53 @@ class _HomePageState extends State<HomePage> {
         _mapController.move(_currentPosition, 16.0);
       }
     } catch (e) {
-      debugPrint("Error: $e");
+      debugPrint("Error getting location: $e");
     }
   }
 
-  // เพิ่มจุดตรวจ (บันทึก timestamp เต็มๆ ซึ่งมีวันที่อยู่แล้ว)
   Future<void> _addNewPoint() async {
-    await _getCurrentLocation(); 
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => const Center(child: CircularProgressIndicator()),
+    );
+
     try {
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      if (mounted) {
+        setState(() {
+          _currentPosition = LatLng(position.latitude, position.longitude);
+        });
+        _mapController.move(_currentPosition, 18.0);
+      }
+
       await FirebaseFirestore.instance
           .collection('gardens').doc(widget.gardenId)
           .collection('inspections').doc(widget.inspectionDateId)
           .collection('points').add({
-            'latitude': _currentPosition.latitude,
-            'longitude': _currentPosition.longitude,
-            'timestamp': FieldValue.serverTimestamp(), // บันทึกวันและเวลาปัจจุบัน
+            'latitude': position.latitude,
+            'longitude': position.longitude,
+            'timestamp': FieldValue.serverTimestamp(),
             'n_value': 0, 'p_value': 0, 'k_value': 0, 'moisture': 0,
           });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("บันทึกจุดตรวจแล้ว!"), backgroundColor: Colors.green)
-      );
+
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("บันทึกพิกัดล่าสุดเรียบร้อย!"), backgroundColor: Colors.green)
+        );
+      }
+
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
+      if (mounted) {
+        Navigator.pop(context); 
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("หาพิกัดไม่เจอ: $e"), backgroundColor: Colors.red)
+        );
+      }
     }
   }
 
@@ -101,11 +139,9 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // [แก้ไข] ฟังก์ชันแปลงเวลาให้โชว์วันที่ด้วย
   String _formatDateTime(Timestamp? timestamp) {
     if (timestamp == null) return "-";
     DateTime date = timestamp.toDate();
-    // รูปแบบ: 01/02/2026 14:30
     return DateFormat('dd/MM/yyyy HH:mm').format(date);
   }
 
@@ -117,14 +153,13 @@ class _HomePageState extends State<HomePage> {
       builder: (context) {
         return Container(
           padding: const EdgeInsets.all(20),
-          height: 300, // เพิ่มความสูงนิดหน่อย
+          height: 300,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  // แสดงหัวข้อเป็นวันที่และเวลา
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -191,13 +226,48 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text("แผนที่และข้อมูลจุดตรวจ"),
         backgroundColor: Colors.green,
+        // [เพิ่ม] ปุ่ม 3 จุดสำหรับเลือกการเรียงลำดับ
+        actions: [
+          PopupMenuButton<bool>(
+            icon: const Icon(Icons.sort), // ไอคอนเรียงลำดับ
+            onSelected: (bool value) {
+              setState(() {
+                _isDescending = value;
+                _selectedIndex = null; // รีเซ็ตการเลือกเพื่อกันสับสน
+              });
+            },
+            itemBuilder: (BuildContext context) => <PopupMenuEntry<bool>>[
+              const PopupMenuItem<bool>(
+                value: true,
+                child: Row(
+                  children: [
+                    Icon(Icons.arrow_downward, color: Colors.green),
+                    SizedBox(width: 8),
+                    Text('เรียง: ล่าสุด -> เก่าสุด'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem<bool>(
+                value: false,
+                child: Row(
+                  children: [
+                    Icon(Icons.arrow_upward, color: Colors.orange),
+                    SizedBox(width: 8),
+                    Text('เรียง: เก่าสุด -> ล่าสุด'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
       body: StreamBuilder<QuerySnapshot>(
         stream: FirebaseFirestore.instance
             .collection('gardens').doc(widget.gardenId)
             .collection('inspections').doc(widget.inspectionDateId)
             .collection('points')
-            .orderBy('timestamp', descending: true)
+            // [แก้ไข] ใช้ตัวแปร _isDescending ในการกำหนดลำดับ
+            .orderBy('timestamp', descending: _isDescending) 
             .snapshots(),
         builder: (context, snapshot) {
           if (snapshot.hasError) return Center(child: Text("Error: ${snapshot.error}"));
@@ -263,10 +333,20 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               Container(
-                padding: const EdgeInsets.all(10),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 color: Colors.green[50],
                 width: double.infinity,
-                child: Text("รายการตรวจ (${docs.length} จุด)", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text("รายการตรวจ (${docs.length} จุด)", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    // [เพิ่ม] แสดงสถานะการเรียงลำดับเล็กๆ ให้รู้
+                    Text(
+                      _isDescending ? "(ล่าสุดก่อน)" : "(เก่าสุดก่อน)",
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ],
+                ),
               ),
               Expanded(
                 child: ListView.builder(
@@ -290,7 +370,6 @@ class _HomePageState extends State<HomePage> {
                           backgroundColor: isSelected ? Colors.blue : Colors.green,
                           child: Text("${index + 1}", style: const TextStyle(color: Colors.white)),
                         ),
-                        // [แก้ไข] แสดงวันที่และเวลาตรงนี้
                         title: Text("บันทึกเมื่อ: ${_formatDateTime(data['timestamp'])}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                         subtitle: Text("N: ${data['n_value']} P: ${data['p_value']} K: ${data['k_value']}"),
                         
