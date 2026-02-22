@@ -1,1 +1,39 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"npk-sensor-51b5c","appId":"1:715128702903:android:3657db82040452e8ba8a32","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"npk-sensor-51b5c","configurations":{"android":"1:715128702903:android:3657db82040452e8ba8a32","ios":"1:715128702903:ios:f4f2d1fe3f2d2116ba8a32","macos":"1:715128702903:ios:f4f2d1fe3f2d2116ba8a32","web":"1:715128702903:web:a6d95411cc96a35cba8a32","windows":"1:715128702903:web:7d540688e1e5051dba8a32"}}}}}}
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "npk-sensor-51b5c",
+          "appId": "1:715128702903:android:3657db82040452e8ba8a32",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "npk-sensor-51b5c",
+          "configurations": {
+            "android": "1:715128702903:android:3657db82040452e8ba8a32",
+            "ios": "1:715128702903:ios:f4f2d1fe3f2d2116ba8a32",
+            "macos": "1:715128702903:ios:f4f2d1fe3f2d2116ba8a32",
+            "web": "1:715128702903:web:a6d95411cc96a35cba8a32",
+            "windows": "1:715128702903:web:7d540688e1e5051dba8a32"
+          }
+        }
+      }
+    }
+  },
+  "hosting": {
+    "public": "build/web",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}
