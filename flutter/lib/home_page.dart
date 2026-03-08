@@ -1,12 +1,13 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb; 
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'ble_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
 
 class HomePage extends StatefulWidget {
   final String gardenId;
@@ -31,21 +32,32 @@ class _HomePageState extends State<HomePage> {
   int? _selectedIndex;
   bool _isDescending = true;
 
-  // สถานะ Bluetooth
-  bool _isBlueConnected = false;
+  // สำหรับการทำงานบน Web
+  StreamSubscription<DocumentSnapshot>? _webSubscription;
+  int? _lastN, _lastP, _lastK;
 
   @override
   void initState() {
     super.initState();
     _getCurrentLocation();
-    _checkBluetoothStatus();
+
+    // เช็กแพลตฟอร์มเพื่อเลือกระบบดักฟังที่เหมาะสม
+    if (kIsWeb) {
+      _startWebForegroundListening();
+    } else {
+      _startBackgroundListening();
+    }
   }
 
-  // เช็กสถานะเริ่มต้น
-  void _checkBluetoothStatus() {
-    setState(() {
-      _isBlueConnected = BLEService().isConnected;
-    });
+  @override
+  void dispose() {
+    // ปิดการดักฟังเมื่อออกหน้านี้
+    if (kIsWeb) {
+      _webSubscription?.cancel();
+    } else {
+      FlutterBackgroundService().invoke('stopService');
+    }
+    super.dispose();
   }
 
   Future<void> _getCurrentLocation() async {
@@ -75,257 +87,94 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // --- Helper: Loading Dialog ---
-  void _showLoadingDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => const Center(child: CircularProgressIndicator()),
+  // --- ฟังก์ชันสำหรับ Web (ต้องเปิดหน้าจอค้าง) ---
+  void _startWebForegroundListening() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("ระบบบันทึกทำงานแล้ว (ห้ามปิด/พับหน้าเว็บ)"), backgroundColor: Colors.orange)
     );
-  }
 
-  // --- 1. ฟังก์ชันสแกนและเชื่อมต่อ ---
-  Future<void> _showScanDialog() async {
-    await [
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      Permission.location,
-    ].request();
+    bool isFirstLoad = true; // [สำคัญ] ป้องกันการบันทึกค่าแรกสุดตอนโหลดหน้าเว็บ
 
-    try {
-      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
-    } catch (e) {
-      debugPrint("Start Scan Error: $e");
-    }
+    _webSubscription = FirebaseFirestore.instance
+        .collection('ESP01')
+        .doc('NPK')
+        .snapshots()
+        .listen((snapshot) async {
+      
+      if (snapshot.exists && snapshot.data() != null) {
+        var data = snapshot.data() as Map<String, dynamic>;
+        int n = data['N'] ?? 0;
+        int p = data['P'] ?? 0;
+        int k = data['K'] ?? 0;
 
-    if (!mounted) return;
+        // 1. ถ้าเป็นการโหลดครั้งแรก ให้จำค่าไว้ แต่ห้ามบันทึก
+        if (isFirstLoad) {
+          isFirstLoad = false;
+          _lastN = n; _lastP = p; _lastK = k;
+          return;
+        }
 
-    showDialog(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text("ค้นหาอุปกรณ์ NPK"),
-          content: SizedBox(
-            width: double.maxFinite,
-            height: 300,
-            child: StreamBuilder<List<ScanResult>>(
-              stream: FlutterBluePlus.scanResults,
-              builder: (ctx, snapshot) {
-                if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+        // 2. ถ้าค่าไม่มีการเปลี่ยนแปลง ให้ข้ามไป
+        if (n == _lastN && p == _lastP && k == _lastK) return;
+        
+        _lastN = n; _lastP = p; _lastK = k;
 
-                var results = snapshot.data!;
-                var filtered = results.where((r) => r.device.platformName.isNotEmpty).toList();
-
-                if (filtered.isEmpty) return const Center(child: Text("ไม่พบอุปกรณ์"));
-
-                return ListView.builder(
-                  itemCount: filtered.length,
-                  itemBuilder: (ctx, index) {
-                    var r = filtered[index];
-                    return ListTile(
-                      title: Text(r.device.platformName),
-                      subtitle: Text(r.device.remoteId.toString()),
-                      trailing: ElevatedButton(
-                        child: const Text("เชื่อมต่อ"),
-                        onPressed: () async {
-                          FlutterBluePlus.stopScan();
-                          Navigator.of(dialogContext).pop(); 
-
-                          _showLoadingDialog(context);
-
-                          try {
-                            await BLEService().connect(r.device);
-                            if (mounted) {
-                              setState(() => _isBlueConnected = true);
-                              Navigator.of(context).pop(); 
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text("เชื่อมต่อสำเร็จ"), backgroundColor: Colors.green)
-                              );
-                            }
-                          } catch (e) {
-                            if (mounted) {
-                              setState(() => _isBlueConnected = false);
-                              Navigator.of(context).pop(); 
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text("เชื่อมต่อไม่ได้: $e"), backgroundColor: Colors.red)
-                              );
-                            }
-                          }
-                        },
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                FlutterBluePlus.stopScan();
-                Navigator.of(dialogContext).pop();
-              },
-              child: const Text("ปิด"),
-            )
-          ],
-        );
-      },
-    );
-  }
-
-  // --- 2. ฟังก์ชันยืนยันการตัดการเชื่อมต่อ ---
-  void _confirmDisconnect() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("ตัดการเชื่อมต่อ"),
-        content: const Text("คุณต้องการเลิกเชื่อมต่อกับอุปกรณ์ใช่หรือไม่?"),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("ยกเลิก")),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context); 
-              _showLoadingDialog(context); 
-
-              try {
-                await BLEService().disconnect();
-                if (mounted) {
-                  setState(() => _isBlueConnected = false);
-                  Navigator.pop(context); 
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text("ตัดการเชื่อมต่อแล้ว"))
-                  );
-                }
-              } catch (e) {
-                if (mounted) Navigator.pop(context); 
-              }
-            },
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text("ตัดการเชื่อมต่อ"),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // --- 3. ฟังก์ชันบันทึกจุด (เพิ่มการเช็คค่า 0) ---
-  Future<void> _addNewPoint() async {
-    _showLoadingDialog(context); // 1. แสดง Loading ก่อนเลย
-
-    try {
-      // 2. หาพิกัด GPS
-      Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-
-      if (mounted) {
-        setState(() {
-          _currentPosition = LatLng(position.latitude, position.longitude);
-        });
-        _mapController.move(_currentPosition, 18.0);
-      }
-
-      // 3. เตรียมตัวแปร
-      int n = 0, p = 0, k = 0, moisture = 0;
-      String source = "Manual";
-
-      // 4. อ่านค่าจาก Bluetooth (ถ้าต่ออยู่)
-      if (_isBlueConnected && BLEService().isConnected) {
         try {
-          var data = await BLEService().readNPK();
-          if (data.isNotEmpty) {
-            n = data['n'] ?? 0;
-            p = data['p'] ?? 0;
-            k = data['k'] ?? 0;
-            moisture = data['moisture'] ?? 0;
-            source = "Sensor (BLE)";
-          }
-        } catch (e) {
-          debugPrint("Read error: $e");
-        }
-      }
+          Position position = await Geolocator.getCurrentPosition(
+              desiredAccuracy: LocationAccuracy.high);
+          DateTime currentTime = DateTime.now(); // เวลา ณ วินาทีที่ ESP32 ยิงค่ามาเปลี่ยน
 
-      // -----------------------------------------------------------------
-      // [ใหม่] ตรวจสอบค่า NPK ถ้าเป็น 0 0 0 ให้เตือน
-      // -----------------------------------------------------------------
-      if (n == 0 && p == 0 && k == 0) {
-        // ปิด Loading อันเดิมก่อน เพื่อแสดง Dialog เตือน
-        if (mounted) Navigator.pop(context);
-
-        // แสดง Dialog เตือน
-        if (mounted) {
-          bool? confirm = await showDialog<bool>(
-            context: context,
-            barrierDismissible: false, // บังคับให้กดปุ่ม
-            builder: (ctx) => AlertDialog(
-              title: const Row(
-                children: [
-                  Icon(Icons.warning_amber_rounded, color: Colors.orange),
-                  SizedBox(width: 10),
-                  Text("แจ้งเตือนค่าเป็น 0"),
-                ],
-              ),
-              content: const Text(
-                "ค่า N P K เป็น 0 ทั้งหมด\n\n"
-                "• หากคุณต้องการค่าจริง: กรุณาเชื่อมต่อ ESP32 หรือตรวจสอบเซนเซอร์\n"
-                "• หากต้องการบันทึกค่า 0: กดยืนยันด้านล่าง",
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, false), // ยกเลิก (ไปเชื่อมต่อ)
-                  child: const Text("ยกเลิก (ไปเชื่อมต่อ)"),
-                ),
-                ElevatedButton(
-                  onPressed: () => Navigator.pop(ctx, true), // ยืนยันบันทึก
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
-                  child: const Text("บันทึกค่า 0", style: TextStyle(color: Colors.white)),
-                ),
-              ],
-            ),
-          );
-
-          // ถ้าผู้ใช้กด "ยกเลิก" หรือปิด Dialog ให้หยุดทำงานทันที
-          if (confirm != true) return;
-          
-          // ถ้าผู้ใช้กด "บันทึกค่า 0" ให้แสดง Loading อีกครั้งแล้วทำต่อ
-          if (mounted) _showLoadingDialog(context);
-        }
-      }
-      // -----------------------------------------------------------------
-
-      // 5. บันทึกลง Firestore
-      await FirebaseFirestore.instance
-          .collection('gardens').doc(widget.gardenId)
-          .collection('inspections').doc(widget.inspectionDateId)
-          .collection('points').add({
+          await FirebaseFirestore.instance
+              .collection('gardens').doc(widget.gardenId)
+              .collection('inspections').doc(widget.inspectionDateId)
+              .collection('points').add({
             'latitude': position.latitude,
             'longitude': position.longitude,
-            'timestamp': FieldValue.serverTimestamp(),
-            'n_value': n, 'p_value': p, 'k_value': k, 'moisture': moisture,
-            'source': source,
+            'timestamp': Timestamp.fromDate(currentTime), 
+            'n_value': n, 'p_value': p, 'k_value': k,
+            'moisture': 0, 
+            'source': "ESP32 (Web-Auto)",
           });
-
-      // 6. เสร็จสิ้น
-      if (mounted) {
-        Navigator.pop(context); // ปิด Loading สุดท้าย
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("บันทึกสำเร็จ! (N:$n P:$p K:$k)"), backgroundColor: Colors.green)
-        );
+          
+          if (mounted) {
+            String timeStr = DateFormat('HH:mm:ss').format(currentTime);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text("บันทึกจาก Web สำเร็จ! (เวลา: $timeStr)"), backgroundColor: Colors.green)
+            );
+          }
+        } catch (e) {
+          debugPrint("Web Save Error: $e");
+        }
       }
+    });
+  }
 
-    } catch (e) {
+  // --- ฟังก์ชันสำหรับมือถือ (พับจอได้) ---
+  Future<void> _startBackgroundListening() async {
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString('bg_gardenId', widget.gardenId);
+    await prefs.setString('bg_inspectionId', widget.inspectionDateId);
+
+    final service = FlutterBackgroundService();
+    bool isRunning = await service.isRunning();
+    if (!isRunning) {
+      await service.startService();
       if (mounted) {
-        // ถ้ามี Error แล้ว Loading ยังค้างอยู่ ให้ปิดออก
-        Navigator.of(context, rootNavigator: true).maybePop(); 
-        
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("เกิดข้อผิดพลาด: $e"), backgroundColor: Colors.red)
+          const SnackBar(
+            content: Text("ระบบบันทึกอัตโนมัติทำงานแล้ว (พับจอมือถือได้)"),
+            backgroundColor: Colors.green,
+          )
         );
       }
     }
   }
 
-  // --- Helper Functions เดิม ---
   void _deletePoint(String docId) {
      showDialog(
       context: context,
@@ -395,7 +244,7 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
               const SizedBox(height: 20),
-              Center(child: Text("ความชื้น: ${data['moisture']}%", style: const TextStyle(fontSize: 16))),
+              Center(child: Text("ความชื้น: ${data['moisture'] ?? 0}%", style: const TextStyle(fontSize: 16))),
             ],
           ),
         );
@@ -430,20 +279,6 @@ class _HomePageState extends State<HomePage> {
         title: const Text("แผนที่และจุดตรวจ"),
         backgroundColor: Colors.green,
         actions: [
-          IconButton(
-            icon: Icon(
-                _isBlueConnected ? Icons.bluetooth_connected : Icons.bluetooth_searching,
-                color: _isBlueConnected ? Colors.blue[100] : Colors.white
-            ),
-            tooltip: _isBlueConnected ? "ตัดการเชื่อมต่อ" : "ค้นหาอุปกรณ์",
-            onPressed: () {
-                if (_isBlueConnected) {
-                    _confirmDisconnect();
-                } else {
-                    _showScanDialog();
-                }
-            },
-          ),
           PopupMenuButton<bool>(
             icon: const Icon(Icons.sort),
             onSelected: (bool value) => setState(() { _isDescending = value; _selectedIndex = null; }),
@@ -513,7 +348,7 @@ class _HomePageState extends State<HomePage> {
               ),
               Expanded(
                 child: ListView.builder(
-                  padding: const EdgeInsets.only(bottom: 100),
+                  padding: const EdgeInsets.only(bottom: 20),
                   itemCount: docs.length,
                   itemBuilder: (context, index) {
                     var data = docs[index].data() as Map<String, dynamic>;
@@ -535,12 +370,6 @@ class _HomePageState extends State<HomePage> {
             ],
           );
         },
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _addNewPoint,
-        label: Text(_isBlueConnected ? "อ่านค่า & บันทึก" : "บันทึก"),
-        icon: Icon(_isBlueConnected ? Icons.bluetooth_audio : Icons.add_location_alt),
-        backgroundColor: _isBlueConnected ? Colors.blue[700] : Colors.green,
       ),
     );
   }
