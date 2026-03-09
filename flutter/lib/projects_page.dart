@@ -12,6 +12,69 @@ class ProjectsPage extends StatefulWidget {
 
 class _ProjectsPageState extends State<ProjectsPage> {
   User? get user => FirebaseAuth.instance.currentUser;
+  
+  // เพิ่มตัวแปรเก็บชื่อ ESP32 ที่เลือก
+  String? _selectedESP32;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserESP32();
+  }
+
+  // ดึงค่า esp32_id จาก Firestore ของผู้ใช้คนนี้
+  Future<void> _loadUserESP32() async {
+    if (user != null) {
+      var doc = await FirebaseFirestore.instance.collection('users').doc(user!.uid).get();
+      if (mounted && doc.exists && doc.data() != null && doc.data()!.containsKey('esp32_id')) {
+        setState(() {
+          _selectedESP32 = doc['esp32_id'];
+        });
+      }
+    }
+  }
+
+  // --- ฟังก์ชันระบุชื่อ ESP32 (บันทึกลง Firestore: users) ---
+  void _showESP32Selector() {
+    TextEditingController espController = TextEditingController(text: _selectedESP32);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("ระบุอุปกรณ์ ESP32"),
+        content: TextField(
+          controller: espController,
+          decoration: const InputDecoration(
+            hintText: "เช่น ESP01, Nodemcu_1",
+            prefixIcon: Icon(Icons.memory),
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("ยกเลิก")),
+          ElevatedButton(
+            onPressed: () async {
+              String newVal = espController.text.trim();
+              String? finalVal = newVal.isEmpty ? null : newVal;
+              
+              setState(() {
+                _selectedESP32 = finalVal;
+              });
+              
+              // บันทึกลง Firestore collection 'users' ของผู้ใช้คนนั้น
+              if (user != null) {
+                await FirebaseFirestore.instance.collection('users').doc(user!.uid).set({
+                  'esp32_id': finalVal,
+                }, SetOptions(merge: true));
+              }
+
+              if (mounted) Navigator.pop(context);
+            },
+            child: const Text("ตกลง"),
+          ),
+        ],
+      ),
+    );
+  }
 
   // --- 1. ฟังก์ชันสร้างโปรเจคใหม่ ---
   void _createNewProject() {
@@ -36,7 +99,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                   'owner_uid': user?.uid,
                   'members': [user?.uid],
                   'roles': {user?.uid: 'owner'},
-                  'nicknames': {user?.uid: 'ฉัน (เจ้าของสูงสุด)'}, // ยังเก็บใน Garden อยู่
+                  'nicknames': {user?.uid: 'ฉัน (เจ้าของสูงสุด)'},
                   'created_at': FieldValue.serverTimestamp(),
                 });
                 Navigator.pop(context);
@@ -51,7 +114,6 @@ class _ProjectsPageState extends State<ProjectsPage> {
 
   // --- 2. ฟังก์ชันจัดการสมุดรายชื่อ (Contacts) ---
   Future<void> _updateContactInfo(String friendUid, String email, String? nickname) async {
-    // บันทึก/อัปเดต รายชื่อเพื่อนลง Sub-collection
     await FirebaseFirestore.instance
         .collection('users').doc(user!.uid)
         .collection('contacts').doc(friendUid)
@@ -145,7 +207,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
               await FirebaseFirestore.instance.collection('gardens').doc(docId).update({
                 'members': FieldValue.arrayRemove([memberUid]),
                 'roles.$memberUid': FieldValue.delete(),
-                'nicknames.$memberUid': FieldValue.delete(), // ลบชื่อในสวนทิ้งด้วย
+                'nicknames.$memberUid': FieldValue.delete(),
               });
               if (mounted) Navigator.pop(context); 
             },
@@ -166,7 +228,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateDialog) => AlertDialog(
-          title: Text("จัดการสมาชิก"),
+          title: const Text("จัดการสมาชิก"),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -179,7 +241,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                     hintText: "ชื่อเล่นในโปรเจคนี้",
                     isDense: true,
                     prefixIcon: Icon(Icons.edit, size: 18),
-                    helperText: "จะอัปเดตในสมุดรายชื่อของคุณด้วย", // แจ้งผู้ใช้
+                    helperText: "จะอัปเดตในสมุดรายชื่อของคุณด้วย",
                     helperStyle: TextStyle(color: Colors.blue),
                   ),
                 ),
@@ -211,14 +273,12 @@ class _ProjectsPageState extends State<ProjectsPage> {
             TextButton(onPressed: () => Navigator.pop(context), child: const Text("ยกเลิก")),
             ElevatedButton(
               onPressed: () async {
-                // 1. เตรียมข้อมูลอัปเดตใน Garden
                 Map<String, dynamic> updates = {
                   'roles.$memberUid': newRole,
                 };
                 
                 String newNickname = nicknameController.text.trim();
                 
-                // อัปเดตชื่อใน Garden (เหมือนเดิม)
                 if (newNickname.isNotEmpty) {
                   updates['nicknames.$memberUid'] = newNickname;
                 } else {
@@ -227,8 +287,6 @@ class _ProjectsPageState extends State<ProjectsPage> {
 
                 await FirebaseFirestore.instance.collection('gardens').doc(docId).update(updates);
                 
-                // 2. [เพิ่ม] ซิงค์ไปที่ Contacts ด้วย (ถ้ามีชื่อ)
-                // ตรวจสอบก่อนว่าเคยมีคนนี้ใน contacts หรือไม่ ถ้ามีก็อัปเดตชื่อ ถ้าไม่มีก็เพิ่ม
                 if (newNickname.isNotEmpty) {
                    await _updateContactInfo(memberUid, email, newNickname);
                 }
@@ -280,7 +338,6 @@ class _ProjectsPageState extends State<ProjectsPage> {
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // --- Search & Add ---
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -288,7 +345,6 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                 child: Autocomplete<String>(
                                   optionsBuilder: (TextEditingValue textEditingValue) async {
                                     if (textEditingValue.text.length < 3) return const Iterable<String>.empty();
-                                    // ค้นหาจาก Users ทั้งหมด
                                     var querySnapshot = await FirebaseFirestore.instance
                                         .collection('users')
                                         .where('email', isGreaterThanOrEqualTo: textEditingValue.text)
@@ -409,7 +465,6 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                        return;
                                     }
 
-                                    // 1. เพิ่มเข้า Garden (Shared) - เก็บ nickname ด้วย
                                     Map<String, dynamic> updateData = {
                                       'members': FieldValue.arrayUnion([friendUid]),
                                       'roles.$friendUid': selectedRole,
@@ -418,7 +473,6 @@ class _ProjectsPageState extends State<ProjectsPage> {
 
                                     await FirebaseFirestore.instance.collection('gardens').doc(docId).update(updateData);
                                     
-                                    // 2. บันทึกลง Contacts (Private)
                                     if (saveToContacts || nickname.isNotEmpty) {
                                       await _updateContactInfo(friendUid, email, nickname);
                                     }
@@ -441,7 +495,6 @@ class _ProjectsPageState extends State<ProjectsPage> {
                           
                           const Divider(height: 30, thickness: 1),
 
-                          // --- รายชื่อสมาชิก (ส่วนแสดงผล) ---
                           ExpansionTile(
                             title: Text("รายชื่อสมาชิก (${members.length})", 
                               style: TextStyle(color: Colors.grey[800], fontWeight: FontWeight.bold)
@@ -457,7 +510,6 @@ class _ProjectsPageState extends State<ProjectsPage> {
                                   itemBuilder: (context, index) {
                                     String memberUid = members[index];
                                     String role = roles[memberUid] ?? 'worker';
-                                    // ใช้ nickname จาก Garden เป็นหลักก่อน
                                     String? nickname = nicknames[memberUid];
                                     bool isMe = (memberUid == user?.uid);
                                     bool isPrimaryOwner = (memberUid == primaryOwnerUid);
@@ -494,7 +546,6 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
   }
 
-  // --- Helper Widget สำหรับสร้าง ListTile สมาชิก ---
   Widget _buildMemberTile(String docId, String memberUid, String role, String email, String nickname, bool isMe, bool isPrimaryOwner) {
     String titleToShow = (nickname.isNotEmpty) ? nickname : email;
     String roleText;
@@ -533,7 +584,6 @@ class _ProjectsPageState extends State<ProjectsPage> {
                 children: [
                   IconButton(
                     icon: const Icon(Icons.manage_accounts, color: Colors.blue, size: 24),
-                    // กดแล้วแก้ทั้ง Role และชื่อ (เข้า Contact)
                     onPressed: () => _editMemberInfo(docId, memberUid, role, nickname, email),
                   ),
                   IconButton(
@@ -629,6 +679,16 @@ class _ProjectsPageState extends State<ProjectsPage> {
         title: const Text("เลือกโปรเจคสวน"),
         backgroundColor: Colors.green,
         actions: [
+          // ActionChip สำหรับระบุและดู ESP32
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            child: ActionChip(
+              avatar: const Icon(Icons.memory, size: 16),
+              label: Text(_selectedESP32 ?? "ระบุ ESP32"),
+              onPressed: _showESP32Selector,
+              backgroundColor: _selectedESP32 == null ? Colors.red[100] : Colors.green[200],
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () => FirebaseAuth.instance.signOut(),
@@ -704,6 +764,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                   ) : null, 
                   
                   onTap: () {
+                    // ไม่ต้องส่ง esp32Id ไปแล้ว
                     Navigator.push(
                       context,
                       MaterialPageRoute(

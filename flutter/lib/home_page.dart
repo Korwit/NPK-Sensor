@@ -1,13 +1,10 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb; 
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_background_service/flutter_background_service.dart';
 
 class HomePage extends StatefulWidget {
   final String gardenId;
@@ -31,32 +28,22 @@ class _HomePageState extends State<HomePage> {
   bool _isLoadingLocation = true;
   int? _selectedIndex;
   bool _isDescending = true;
+  
+  bool _isRecording = false;
 
-  // สำหรับการทำงานบน Web
-  StreamSubscription<DocumentSnapshot>? _webSubscription;
-  int? _lastN, _lastP, _lastK;
+  // ตัวแปรสำหรับ ESP32
+  String? _esp32Id;
+  bool _isLoadingESP32 = true;
 
   @override
   void initState() {
     super.initState();
     _getCurrentLocation();
-
-    // เช็กแพลตฟอร์มเพื่อเลือกระบบดักฟังที่เหมาะสม
-    if (kIsWeb) {
-      _startWebForegroundListening();
-    } else {
-      _startBackgroundListening();
-    }
+    _loadUserESP32(); // เรียกโหลด esp32 และสถานะปุ่มตอนเปิดหน้า
   }
 
   @override
   void dispose() {
-    // ปิดการดักฟังเมื่อออกหน้านี้
-    if (kIsWeb) {
-      _webSubscription?.cancel();
-    } else {
-      FlutterBackgroundService().invoke('stopService');
-    }
     super.dispose();
   }
 
@@ -87,91 +74,74 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // --- ฟังก์ชันสำหรับ Web (ต้องเปิดหน้าจอค้าง) ---
-  void _startWebForegroundListening() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("ระบบบันทึกทำงานแล้ว (ห้ามปิด/พับหน้าเว็บ)"), backgroundColor: Colors.orange)
-    );
-
-    bool isFirstLoad = true; // [สำคัญ] ป้องกันการบันทึกค่าแรกสุดตอนโหลดหน้าเว็บ
-
-    _webSubscription = FirebaseFirestore.instance
-        .collection('ESP01')
-        .doc('NPK')
-        .snapshots()
-        .listen((snapshot) async {
-      
-      if (snapshot.exists && snapshot.data() != null) {
-        var data = snapshot.data() as Map<String, dynamic>;
-        int n = data['N'] ?? 0;
-        int p = data['P'] ?? 0;
-        int k = data['K'] ?? 0;
-
-        // 1. ถ้าเป็นการโหลดครั้งแรก ให้จำค่าไว้ แต่ห้ามบันทึก
-        if (isFirstLoad) {
-          isFirstLoad = false;
-          _lastN = n; _lastP = p; _lastK = k;
-          return;
-        }
-
-        // 2. ถ้าค่าไม่มีการเปลี่ยนแปลง ให้ข้ามไป
-        if (n == _lastN && p == _lastP && k == _lastK) return;
+  // --- ปรับปรุงฟังก์ชันนี้: ดึงค่า esp32_id และสถานะการบันทึกปัจจุบัน ---
+  Future<void> _loadUserESP32() async {
+    String uid = FirebaseAuth.instance.currentUser!.uid;
+    var userDoc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+    
+    if (mounted) {
+      if (userDoc.exists && userDoc.data() != null && userDoc.data()!.containsKey('esp32_id')) {
+        String fetchedEsp32Id = userDoc['esp32_id'];
         
-        _lastN = n; _lastP = p; _lastK = k;
-
-        try {
-          Position position = await Geolocator.getCurrentPosition(
-              desiredAccuracy: LocationAccuracy.high);
-          DateTime currentTime = DateTime.now(); // เวลา ณ วินาทีที่ ESP32 ยิงค่ามาเปลี่ยน
-
-          await FirebaseFirestore.instance
-              .collection('gardens').doc(widget.gardenId)
-              .collection('inspections').doc(widget.inspectionDateId)
-              .collection('points').add({
-            'latitude': position.latitude,
-            'longitude': position.longitude,
-            'timestamp': Timestamp.fromDate(currentTime), 
-            'n_value': n, 'p_value': p, 'k_value': k,
-            'moisture': 0, 
-            'source': "ESP32 (Web-Auto)",
-          });
+        // เมื่อรู้ชื่อ ESP32 แล้ว ให้ไปเช็คสถานะการบันทึกใน Firestore
+        var espDoc = await FirebaseFirestore.instance.collection(fetchedEsp32Id).doc('NPK').get();
+        bool currentRecordingState = false;
+        
+        if (espDoc.exists && espDoc.data() != null) {
+          var data = espDoc.data()!;
+          // สร้าง Path ของหน้านี้เพื่อเอาไปเทียบ
+          String expectedPath = "gardens/${widget.gardenId}/inspections/${widget.inspectionDateId}/points";
           
-          if (mounted) {
-            String timeStr = DateFormat('HH:mm:ss').format(currentTime);
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text("บันทึกจาก Web สำเร็จ! (เวลา: $timeStr)"), backgroundColor: Colors.green)
-            );
+          // เช็คว่า ESP32 กำลังทำงานอยู่ (true) และกำลังส่งข้อมูลเข้า Path ของหน้านี้ใช่หรือไม่
+          if (data['is_recording'] == true && data['save_path'] == expectedPath) {
+            currentRecordingState = true;
           }
-        } catch (e) {
-          debugPrint("Web Save Error: $e");
         }
+
+        setState(() {
+          _esp32Id = fetchedEsp32Id;
+          _isRecording = currentRecordingState; // อัปเดตปุ่มให้ตรงกับความเป็นจริง
+          _isLoadingESP32 = false;
+        });
+      } else {
+        setState(() {
+          _isLoadingESP32 = false; // ไม่มี ESP32 ก็หยุดโหลด
+        });
       }
-    });
+    }
   }
 
-  // --- ฟังก์ชันสำหรับมือถือ (พับจอได้) ---
-  Future<void> _startBackgroundListening() async {
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-      permission = await Geolocator.requestPermission();
+  Future<void> _toggleRecording(bool value) async {
+    // ป้องกันกรณีที่ยังไม่มีค่า ESP32
+    if (_esp32Id == null || _esp32Id!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("กรุณาระบุ ESP32 ที่หน้าแรกก่อนเริ่มบันทึก")));
+      return;
     }
 
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.setString('bg_gardenId', widget.gardenId);
-    await prefs.setString('bg_inspectionId', widget.inspectionDateId);
+    setState(() => _isRecording = value);
 
-    final service = FlutterBackgroundService();
-    bool isRunning = await service.isRunning();
-    if (!isRunning) {
-      await service.startService();
+    String savePath = value 
+        ? "gardens/${widget.gardenId}/inspections/${widget.inspectionDateId}/points" 
+        : "";
+
+    try {
+      // ใช้ _esp32Id ที่ดึงมา
+      await FirebaseFirestore.instance.collection(_esp32Id!).doc('NPK').set({
+        'save_path': savePath,
+        'is_recording': value,
+      }, SetOptions(merge: true));
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("ระบบบันทึกอัตโนมัติทำงานแล้ว (พับจอมือถือได้)"),
-            backgroundColor: Colors.green,
+          SnackBar(
+            content: Text(value ? "เริ่มบันทึก: รอรับข้อมูลจาก $_esp32Id" : "สั่ง $_esp32Id หยุดบันทึก"),
+            backgroundColor: value ? Colors.green : Colors.orange,
+            duration: const Duration(seconds: 2),
           )
         );
       }
+    } catch (e) {
+      debugPrint("Error updating target path: $e");
     }
   }
 
@@ -238,9 +208,9 @@ class _HomePageState extends State<HomePage> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _buildValueBox("N", "${data['n_value']}", Colors.blue),
-                  _buildValueBox("P", "${data['p_value']}", Colors.green),
-                  _buildValueBox("K", "${data['k_value']}", Colors.orange),
+                  _buildValueBox("N", "${data['n_value'] ?? 0}", Colors.blue),
+                  _buildValueBox("P", "${data['p_value'] ?? 0}", Colors.green),
+                  _buildValueBox("K", "${data['k_value'] ?? 0}", Colors.orange),
                 ],
               ),
               const SizedBox(height: 20),
@@ -273,12 +243,27 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     bool isOwner = (widget.userRole == 'owner');
+    
+    // เช็คว่ามีค่า ESP32 แล้วหรือไม่
+    bool hasValidESP32 = _esp32Id != null && _esp32Id!.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text("แผนที่และจุดตรวจ"),
         backgroundColor: Colors.green,
         actions: [
+          Row(
+            children: [
+              Text(_isRecording ? "บันทึก ON" : "บันทึก OFF", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+              Switch(
+                value: _isRecording,
+                // ล็อกสวิตช์ถ้ากำลังโหลดข้อมูลผู้ใช้ หรือยังไม่ได้ตั้งค่า ESP32
+                onChanged: (_isLoadingESP32 || !hasValidESP32) ? null : _toggleRecording,
+                activeColor: Colors.white,
+                activeTrackColor: Colors.redAccent,
+              ),
+            ],
+          ),
           PopupMenuButton<bool>(
             icon: const Icon(Icons.sort),
             onSelected: (bool value) => setState(() { _isDescending = value; _selectedIndex = null; }),
@@ -305,7 +290,7 @@ class _HomePageState extends State<HomePage> {
           
           for (int i = 0; i < docs.length; i++) {
             var data = docs[i].data() as Map<String, dynamic>;
-            LatLng point = LatLng(data['latitude'] ?? 0, data['longitude'] ?? 0);
+            LatLng point = LatLng(data['latitude'] ?? 0.0, data['longitude'] ?? 0.0);
             bool isSelected = (i == _selectedIndex);
 
             mapMarkers.add(Marker(
@@ -323,6 +308,21 @@ class _HomePageState extends State<HomePage> {
 
           return Column(
             children: [
+              // เพิ่มแถบแจ้งเตือนด้านบนถ้ายังไม่ได้ระบุ ESP32
+              if (!_isLoadingESP32 && !hasValidESP32)
+                Container(
+                  color: Colors.red[100],
+                  padding: const EdgeInsets.all(8),
+                  width: double.infinity,
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.warning_amber_rounded, color: Colors.red),
+                      SizedBox(width: 8),
+                      Text("ปุ่มบันทึกถูกล็อก เนื่องจากยังไม่ได้ระบุ ESP32", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ),
               SizedBox(
                 height: MediaQuery.of(context).size.height * 0.45,
                 child: FlutterMap(
@@ -359,9 +359,9 @@ class _HomePageState extends State<HomePage> {
                       child: ListTile(
                         leading: CircleAvatar(backgroundColor: isSelected ? Colors.blue : Colors.green, child: Text("${index + 1}", style: const TextStyle(color: Colors.white))),
                         title: Text("บันทึกเมื่อ: ${_formatDateTime(data['timestamp'])}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
-                        subtitle: Text("N: ${data['n_value']} P: ${data['p_value']} K: ${data['k_value']}"),
+                        subtitle: Text("N: ${data['n_value'] ?? 0} P: ${data['p_value'] ?? 0} K: ${data['k_value'] ?? 0}"),
                         trailing: isOwner ? IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => _deletePoint(docs[index].id)) : null,
-                        onTap: () => _selectPoint(index, LatLng(data['latitude'], data['longitude'])),
+                        onTap: () => _selectPoint(index, LatLng(data['latitude'] ?? 0, data['longitude'] ?? 0)),
                       ),
                     );
                   },
