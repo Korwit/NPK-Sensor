@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -12,7 +13,7 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ble_service.dart';
-import 'bluetooth_scan_dialog.dart'; // แยกไฟล์ BLE dialog ออกมา
+import 'bluetooth_scan_dialog.dart';
 
 class HomePage extends StatefulWidget {
   final String gardenId;
@@ -41,6 +42,9 @@ class _HomePageState extends State<HomePage> {
   bool _isAutoSaving = false;
   bool _isToggling = false;
 
+  // ✅ เพิ่ม: สำหรับ listen event จาก background service
+  StreamSubscription? _ackSubscription;
+
   @override
   void initState() {
     super.initState();
@@ -48,6 +52,28 @@ class _HomePageState extends State<HomePage> {
     _getCurrentLocation();
     _checkBluetoothStatus();
     _checkAutoSaveStatus();
+
+    // ✅ เพิ่ม: รับ event 'sendAckToBLE' จาก background isolate
+    // Background ไม่สามารถ write BLE ได้เพราะ connectedDevice อยู่ใน UI isolate
+    // ให้ UI isolate เป็นคน writeAck() แทน
+    _ackSubscription = FlutterBackgroundService()
+        .on('sendAckToBLE')
+        .listen((event) async {
+      debugPrint('[UI] รับ sendAckToBLE event จาก background');
+      if (BLEService().isConnected) {
+        await BLEService().writeAck();
+        debugPrint('[UI] writeAck() สำเร็จ → ESP32 จะแสดง "บันทึกสำเร็จ!" บน LCD');
+      } else {
+        debugPrint('[UI] BLE ไม่ได้เชื่อมต่อ — ไม่สามารถส่ง ACK ได้');
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    // ✅ cancel subscription เมื่อ widget ถูกทำลาย
+    _ackSubscription?.cancel();
+    super.dispose();
   }
 
   // ─────────────────────────────────────────────
@@ -550,7 +576,6 @@ class _HomePageState extends State<HomePage> {
                 if (state == BluetoothAdapterState.off) {
                   _checkAndEnableBluetooth();
                 } else {
-                  // เรียกใช้ dialog จากไฟล์แยก
                   await showBluetoothScanDialog(
                     context: context,
                     onConnected: () =>

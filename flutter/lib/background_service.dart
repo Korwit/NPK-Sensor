@@ -9,12 +9,13 @@ import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
+// ❌ ลบ import ble_service.dart ออก — BLEService ใช้ใน background isolate ไม่ได้
+// import 'ble_service.dart';
 
 // ─────────────────────────────────────────────
-// 1. Initialize Service (เรียกใน main.dart)
+// 1. Initialize Service
 // ─────────────────────────────────────────────
 Future<void> initializeService() async {
-  // สร้าง Notification Channel ก่อนเสมอ — ถ้าไม่มีนี้แอปจะ crash
   const AndroidNotificationChannel channel = AndroidNotificationChannel(
     'npk_tracking',
     'ระบบบันทึก NPK อัตโนมัติ',
@@ -68,7 +69,7 @@ void onStart(ServiceInstance service) async {
   );
 
   SharedPreferences prefs = await SharedPreferences.getInstance();
-  String? gardenId = prefs.getString('bg_garden_id');
+  String? gardenId  = prefs.getString('bg_garden_id');
   String? inspectId = prefs.getString('bg_inspect_id');
 
   // ─── Android Foreground Controls ───
@@ -86,31 +87,29 @@ void onStart(ServiceInstance service) async {
     service.stopSelf();
   });
 
-  // ─── รับ gardenId / inspectId แบบ dynamic จาก UI ───
+  // ─── รับ gardenId / inspectId จาก UI ───
   service.on('updateIds').listen((event) async {
     if (event != null) {
-      prefs = await SharedPreferences.getInstance();
-      gardenId = event['garden_id'] as String?;
+      prefs     = await SharedPreferences.getInstance();
+      gardenId  = event['garden_id'] as String?;
       inspectId = event['inspect_id'] as String?;
-      if (gardenId != null) await prefs.setString('bg_garden_id', gardenId!);
+      if (gardenId  != null) await prefs.setString('bg_garden_id', gardenId!);
       if (inspectId != null) await prefs.setString('bg_inspect_id', inspectId!);
       debugPrint('[BG] อัปเดต IDs: garden=$gardenId inspect=$inspectId');
     }
   });
 
-  // ─── รับค่า NPK จาก BLEService แล้วบันทึกทันที ───
-  // BLEService จะ invoke 'updateNPK' ทุก 10 วินาทีเมื่อเชื่อมต่ออยู่
+  // ─── รับค่า NPK แล้วบันทึก + ส่ง ACK กลับ ESP32 ───
   service.on('updateNPK').listen((event) async {
     if (event == null) return;
 
-    final int n = event['n'] ?? 0;
-    final int p = event['p'] ?? 0;
-    final int k = event['k'] ?? 0;
+    final int n        = event['n']        ?? 0;
+    final int p        = event['p']        ?? 0;
+    final int k        = event['k']        ?? 0;
     final int moisture = event['moisture'] ?? 0;
 
-    debugPrint('[BG] รับค่า NPK ใหม่: N:$n P:$p K:$k Moisture:$moisture');
+    debugPrint('[BG] รับค่า NPK: N:$n P:$p K:$k Moisture:$moisture');
 
-    // อัปเดต notification ทันที
     if (service is AndroidServiceInstance) {
       if (await service.isForegroundService()) {
         service.setForegroundNotificationInfo(
@@ -120,8 +119,7 @@ void onStart(ServiceInstance service) async {
       }
     }
 
-    // ตรวจสอบ gardenId และ inspectId ก่อนบันทึก
-    final currentGardenId = gardenId ?? prefs.getString('bg_garden_id');
+    final currentGardenId  = gardenId  ?? prefs.getString('bg_garden_id');
     final currentInspectId = inspectId ?? prefs.getString('bg_inspect_id');
 
     if (currentGardenId == null || currentInspectId == null) {
@@ -130,30 +128,36 @@ void onStart(ServiceInstance service) async {
     }
 
     try {
-      // ดึง GPS ปัจจุบัน
+      // ดึง GPS
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
 
-      // บันทึกลง Firestore ทันที
+      // บันทึกลง Firestore
       await FirebaseFirestore.instance
           .collection('gardens').doc(currentGardenId)
           .collection('inspections').doc(currentInspectId)
           .collection('points')
           .add({
-        'latitude': position.latitude,
+        'latitude':  position.latitude,
         'longitude': position.longitude,
         'timestamp': FieldValue.serverTimestamp(),
-        'n_value': n,
-        'p_value': p,
-        'k_value': k,
-        'moisture': moisture,
-        'source': 'Auto (BLE)',
+        'n_value':   n,
+        'p_value':   p,
+        'k_value':   k,
+        'moisture':  moisture,
+        'source':    'Auto (BLE)',
       });
 
-      debugPrint('[BG] บันทึกสำเร็จ: N:$n P:$p K:$k @ (${position.latitude}, ${position.longitude})');
+      debugPrint('[BG] บันทึกสำเร็จ @ (${position.latitude}, ${position.longitude})');
 
-      // อัปเดต notification หลังบันทึกสำเร็จ
+      // ✅ แก้ไข: ส่ง event กลับ UI isolate เพื่อให้ UI เป็นคน writeAck()
+      // เหตุผล: BLEService singleton ไม่ share ข้าม isolate
+      // connectedDevice ใน background จะเป็น null เสมอ
+      service.invoke('sendAckToBLE', {});
+      debugPrint('[BG] invoke sendAckToBLE → UI isolate แล้ว');
+
+      // อัปเดต notification
       if (service is AndroidServiceInstance) {
         if (await service.isForegroundService()) {
           service.setForegroundNotificationInfo(
@@ -164,9 +168,9 @@ void onStart(ServiceInstance service) async {
         }
       }
 
-      // ส่ง event กลับไปที่ UI
+      // ส่ง event กลับ UI (แสดงผลในแอป)
       service.invoke('onDataSaved', {
-        'latitude': position.latitude,
+        'latitude':  position.latitude,
         'longitude': position.longitude,
         'n': n, 'p': p, 'k': k,
         'timestamp': DateTime.now().toIso8601String(),
