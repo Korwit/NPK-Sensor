@@ -50,7 +50,7 @@ dependencies:
   share_plus: 7.2.1
   flutter_blue_plus: ^1.31.0
 
-  flutter_background_service: ^5.0.0
+
   
   
   flutter_background_service_android: ^6.2.2
