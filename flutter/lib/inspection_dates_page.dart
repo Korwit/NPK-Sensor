@@ -25,7 +25,7 @@ class InspectionDatesPage extends StatelessWidget {
   }
 
   // ==========================================
-  // 1. ฟังก์ชันหลัก: ประมวลผลและสร้างไฟล์ CSV
+  // 1. ฟังก์ชันหลัก: ประมวลผลและสร้างไฟล์ CSVั
   // ==========================================
   Future<void> _processExport(BuildContext context, List<QueryDocumentSnapshot> selectedDocs) async {
     if (selectedDocs.isEmpty) {
