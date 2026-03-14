@@ -1,11 +1,12 @@
-import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:csv/csv.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart'; 
-import 'home_page.dart'; // ตรวจสอบชื่อไฟล์ให้ตรงกับของคุณ
+
+// ✅ นำเข้าไฟล์ Export แบบแยกแพลตฟอร์ม
+import 'csv_export_mobile.dart' if (dart.library.html) 'csv_export_web.dart';
+import 'home_page.dart';
 
 class InspectionDatesPage extends StatelessWidget {
   final String gardenId;
@@ -24,52 +25,12 @@ class InspectionDatesPage extends StatelessWidget {
     return '${DateFormat('dd/MM').format(date)}/$thaiYear';
   }
 
-  // ==========================================
-  // 1. ฟังก์ชันหลัก: ประมวลผลและสร้างไฟล์ CSV
-  // ==========================================
   Future<void> _processExport(BuildContext context, List<QueryDocumentSnapshot> selectedDocs) async {
     if (selectedDocs.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("กรุณาเลือกอย่างน้อย 1 รอบ")));
       return;
     }
 
-    // --- ส่วนตรวจสอบ Permission (Android 11+/API 30+) ---
-    if (Platform.isAndroid) {
-      // เช็กสิทธิ์ Manage External Storage
-      if (!await Permission.manageExternalStorage.isGranted) {
-        var status = await Permission.manageExternalStorage.request();
-        
-        if (!status.isGranted) {
-          if (context.mounted) {
-             // แสดง Dialog ให้ผู้ใช้ไปเปิดสิทธิ์เอง (จำเป็นสำหรับ Android รุ่นใหม่)
-             showDialog(
-              context: context,
-              builder: (context) => AlertDialog(
-                title: const Text("ต้องการสิทธิ์เข้าถึงไฟล์"),
-                content: const Text("เพื่อบันทึกไฟล์ลงในโฟลเดอร์ Download แอปจำเป็นต้องได้รับสิทธิ์ 'เข้าถึงไฟล์ทั้งหมด' (All files access)"),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text("ยกเลิก"),
-                  ),
-                  ElevatedButton(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      openAppSettings(); // พาไปหน้าตั้งค่า
-                    },
-                    child: const Text("ไปที่ตั้งค่า"),
-                  ),
-                ],
-              ),
-            );
-          }
-          return; // จบการทำงาน รอให้ผู้ใช้ไปเปิดสิทธิ์ก่อน
-        }
-      }
-    }
-    // ----------------------------------------------------
-
-    // แสดง Loading
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -78,19 +39,15 @@ class InspectionDatesPage extends StatelessWidget {
 
     try {
       List<List<dynamic>> allRows = [];
-      
-      // ส่วนหัวไฟล์
       allRows.add(["สวน: $gardenName"]);
       allRows.add(["วันที่ทำรายการ: ${_formatThaiDate(DateTime.now())}"]);
-      allRows.add([]); // เว้นบรรทัด
+      allRows.add([]);
 
-      // วนลูปดึงข้อมูล
       for (var doc in selectedDocs) {
         String roundName = doc['display_date'];
         allRows.add(["=== รอบตรวจ: $roundName ==="]);
         allRows.add(["วันที่", "เวลา", "Latitude", "Longitude", "N", "P", "K", "ความชื้น", "ที่มา"]);
 
-        // ดึง subcollection 'points'
         var pointsSnapshot = await doc.reference
             .collection('points')
             .orderBy('timestamp', descending: false)
@@ -119,33 +76,23 @@ class InspectionDatesPage extends StatelessWidget {
             ]);
           }
         }
-        // เว้นบรรทัดคั่นรอบ
         allRows.add([]);
         allRows.add([]);
       }
 
-      // แปลงเป็น CSV
       String csvData = const ListToCsvConverter().convert(allRows);
-
-      // กำหนดชื่อไฟล์และ Path
       String safeName = gardenName.replaceAll(' ', '_');
       String fileName = "${safeName}_${DateTime.now().millisecondsSinceEpoch}.csv";
       
-      // Path สำหรับ Android (Download Folder)
-      final path = "/storage/emulated/0/Download/$fileName";
-      final file = File(path);
-      
-      // เขียนไฟล์ (ใส่ BOM \uFEFF ให้ Excel อ่านไทยออก)
-      await file.writeAsString('\uFEFF$csvData');
+      // ✅ เรียกใช้ฟังก์ชันที่แยกไฟล์ Web/Mobile ไว้
+      await exportCSV(fileName, csvData);
 
-      // ปิด Loading
       if (context.mounted) Navigator.pop(context);
 
-      // แจ้งเตือนสำเร็จ
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text("บันทึกไฟล์เรียบร้อยที่โฟลเดอร์ Downloads\nชื่อไฟล์: $fileName"),
+            content: Text(kIsWeb ? "กำลังดาวน์โหลดไฟล์ลงเครื่อง..." : "บันทึกไฟล์เรียบร้อยที่โฟลเดอร์ Downloads"),
             backgroundColor: Colors.green,
             duration: const Duration(seconds: 5),
             action: SnackBarAction(label: "ตกลง", textColor: Colors.white, onPressed: (){}),
@@ -153,22 +100,19 @@ class InspectionDatesPage extends StatelessWidget {
         );
       }
     } catch (e) {
-      if (context.mounted) Navigator.pop(context); // ปิด Loading ถ้า Error
+      if (context.mounted) Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
     }
   }
 
-  // ==========================================
-  // 2. Dialog สำหรับเลือกรายการ (แก้ไขเรื่อง Context แล้ว)
-  // ==========================================
   void _showMultiSelectExportDialog(BuildContext parentContext, List<QueryDocumentSnapshot> allDocs) {
     Set<String> selectedIds = {}; 
 
     showDialog(
       context: parentContext,
-      builder: (dialogContext) { // ใช้ dialogContext สำหรับตัว Dialog เอง
+      builder: (dialogContext) {
         return StatefulBuilder(
-          builder: (builderContext, setStateDialog) { // ใช้ builderContext สำหรับอัปเดต Checkbox
+          builder: (builderContext, setStateDialog) {
             return AlertDialog(
               title: const Text("เลือกรอบตรวจที่ต้องการ"),
               content: SizedBox(
@@ -176,7 +120,6 @@ class InspectionDatesPage extends StatelessWidget {
                 height: 300,
                 child: Column(
                   children: [
-                    // ปุ่มเลือกทั้งหมด
                     Row(
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
@@ -195,7 +138,6 @@ class InspectionDatesPage extends StatelessWidget {
                       ],
                     ),
                     const Divider(),
-                    // รายการ Checkbox
                     Expanded(
                       child: ListView.builder(
                         itemCount: allDocs.length,
@@ -224,19 +166,15 @@ class InspectionDatesPage extends StatelessWidget {
               ),
               actions: [
                 TextButton(
-                  onPressed: () => Navigator.pop(dialogContext), // ปิด Dialog
+                  onPressed: () => Navigator.pop(dialogContext),
                   child: const Text("ยกเลิก")
                 ),
                 ElevatedButton(
                   onPressed: () {
-                    Navigator.pop(dialogContext); // ปิด Dialog ก่อน
-                    
-                    // กรองข้อมูลตามที่เลือก
+                    Navigator.pop(dialogContext);
                     List<QueryDocumentSnapshot> selectedDocs = allDocs
                         .where((doc) => selectedIds.contains(doc.id))
                         .toList();
-                    
-                    // *** สำคัญ: ส่ง parentContext (Context หลัก) ไปทำงานต่อ ***
                     _processExport(parentContext, selectedDocs);
                   },
                   child: Text("ดาวน์โหลด (${selectedIds.length})"),
@@ -249,11 +187,7 @@ class InspectionDatesPage extends StatelessWidget {
     );
   }
 
-  // ==========================================
-  // 3. ตัวจัดการ Action (Menu)
-  // ==========================================
   void _handleExportAction(BuildContext context, String action) async {
-    // ดึงข้อมูลทั้งหมดมาก่อน
     var snapshot = await FirebaseFirestore.instance
         .collection('gardens').doc(gardenId)
         .collection('inspections')
@@ -268,17 +202,12 @@ class InspectionDatesPage extends StatelessWidget {
     if (!context.mounted) return;
 
     if (action == 'all') {
-      // โหลดทั้งหมดทันที
       _processExport(context, snapshot.docs);
     } else if (action == 'select') {
-      // เปิด Dialog ให้เลือก
       _showMultiSelectExportDialog(context, snapshot.docs);
     }
   }
 
-  // ==========================================
-  // 4. ส่วนจัดการวันที่ (สร้าง/แก้ไข/ลบ)
-  // ==========================================
   void _showDateDialog(BuildContext context, {String? docId, DateTime? initialStart, DateTime? initialEnd}) {
     DateTime startDate = initialStart ?? DateTime.now();
     DateTime endDate = initialEnd ?? DateTime.now();
@@ -415,9 +344,6 @@ class InspectionDatesPage extends StatelessWidget {
     );
   }
 
-  // ==========================================
-  // 5. Build UI หลัก
-  // ==========================================
   @override
   Widget build(BuildContext context) {
     bool isOwner = (userRole == 'owner');

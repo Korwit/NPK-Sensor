@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'; // ✅ ใช้สำหรับ kIsWeb และ defaultTargetPlatform
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
@@ -12,8 +12,11 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'ble_service.dart';
-import 'bluetooth_scan_dialog.dart';
+// ✅ ใช้ 2 ไฟล์เดิมสำหรับ Mobile และสลับไปใช้ไฟล์ Web เมื่อเปิดบนเบราว์เซอร์
+import 'ble_service.dart' if (dart.library.html) 'ble_manager_web.dart';
+import 'bluetooth_scan_dialog.dart' if (dart.library.html) 'ble_manager_web.dart';
+
+import 'soil_analysis_page.dart';
 
 class HomePage extends StatefulWidget {
   final String gardenId;
@@ -34,15 +37,15 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final MapController _mapController = MapController();
   LatLng _currentPosition = const LatLng(13.7563, 100.5018);
+  double _currentAltitude = 0;  
   bool _isLoadingLocation = true;
   int? _selectedIndex;
   bool _isDescending = true;
-
+  
   bool _isBlueConnected = false;
   bool _isAutoSaving = false;
   bool _isToggling = false;
 
-  // ✅ เพิ่ม: สำหรับ listen event จาก background service
   StreamSubscription? _ackSubscription;
 
   @override
@@ -51,27 +54,24 @@ class _HomePageState extends State<HomePage> {
     _checkAndEnableBluetooth();
     _getCurrentLocation();
     _checkBluetoothStatus();
-    _checkAutoSaveStatus();
-
-    // ✅ เพิ่ม: รับ event 'sendAckToBLE' จาก background isolate
-    // Background ไม่สามารถ write BLE ได้เพราะ connectedDevice อยู่ใน UI isolate
-    // ให้ UI isolate เป็นคน writeAck() แทน
-    _ackSubscription = FlutterBackgroundService()
-        .on('sendAckToBLE')
-        .listen((event) async {
-      debugPrint('[UI] รับ sendAckToBLE event จาก background');
-      if (BLEService().isConnected) {
-        await BLEService().writeAck();
-        debugPrint('[UI] writeAck() สำเร็จ → ESP32 จะแสดง "บันทึกสำเร็จ!" บน LCD');
-      } else {
-        debugPrint('[UI] BLE ไม่ได้เชื่อมต่อ — ไม่สามารถส่ง ACK ได้');
-      }
-    });
+    
+    // ✅ ฟังก์ชันพวกนี้ให้รันเฉพาะบน Mobile
+    if (!kIsWeb) {
+      _checkAutoSaveStatus();
+      _ackSubscription = FlutterBackgroundService()
+          .on('sendAckToBLE')
+          .listen((event) async {
+        debugPrint('[UI] รับ sendAckToBLE event จาก background');
+        if (BLEService().isConnected) {
+          await BLEService().writeAck();
+          debugPrint('[UI] writeAck() สำเร็จ');
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
-    // ✅ cancel subscription เมื่อ widget ถูกทำลาย
     _ackSubscription?.cancel();
     super.dispose();
   }
@@ -80,6 +80,8 @@ class _HomePageState extends State<HomePage> {
   // Bluetooth
   // ─────────────────────────────────────────────
   Future<void> _checkAndEnableBluetooth() async {
+    if (kIsWeb) return; // ✅ Web จัดการ Bluetooth แบบอื่น ข้ามการขอสิทธิ์นี้ไปเลย
+
     await [
       Permission.bluetooth,
       Permission.bluetoothScan,
@@ -94,7 +96,8 @@ class _HomePageState extends State<HomePage> {
 
     BluetoothAdapterState state = await FlutterBluePlus.adapterState.first;
     if (state == BluetoothAdapterState.off) {
-      if (Platform.isAndroid) {
+      // ✅ ใช้ defaultTargetPlatform แทน Platform.isAndroid เพื่อไม่ให้ Web พัง
+      if (defaultTargetPlatform == TargetPlatform.android) {
         try {
           await FlutterBluePlus.turnOn();
         } catch (e) {
@@ -179,6 +182,7 @@ class _HomePageState extends State<HomePage> {
   // Auto Save
   // ─────────────────────────────────────────────
   Future<void> _checkAutoSaveStatus() async {
+    if (kIsWeb) return; // ✅ ข้ามการทำงานบน Web
     final service = FlutterBackgroundService();
     bool isRunning = await service.isRunning();
     SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -193,6 +197,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _toggleAutoSave() async {
+    if (kIsWeb) return; // ✅ ข้ามการทำงานบน Web
+    
     if (await Permission.notification.isDenied) {
       final status = await Permission.notification.request();
       if (!status.isGranted) {
@@ -279,6 +285,7 @@ class _HomePageState extends State<HomePage> {
       if (mounted) {
         setState(() {
           _currentPosition = LatLng(position.latitude, position.longitude);
+          _currentAltitude = position.altitude; 
           _isLoadingLocation = false;
         });
         _mapController.move(_currentPosition, 16.0);
@@ -286,6 +293,21 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       debugPrint("Error getting location: $e");
     }
+  }
+
+  // ─────────────────────────────────────────────
+  // ✅ เปิดหน้าวิเคราะห์
+  // ─────────────────────────────────────────────
+  void _openAnalysisPage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (ctx) => SoilAnalysisPage(
+          gardenId: widget.gardenId,
+          inspectionDateId: widget.inspectionDateId,
+        ),
+      ),
+    );
   }
 
   // ─────────────────────────────────────────────
@@ -306,7 +328,7 @@ class _HomePageState extends State<HomePage> {
       Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
-
+      double altitude = position.altitude;
       if (mounted) {
         setState(() {
           _currentPosition = LatLng(position.latitude, position.longitude);
@@ -317,7 +339,7 @@ class _HomePageState extends State<HomePage> {
       int n = 0, p = 0, k = 0, moisture = 0;
       String source = "Manual";
 
-      if (_isBlueConnected && BLEService().isConnected) {
+if (_isBlueConnected && BLEService().isConnected) {
         try {
           var data = await BLEService().readNPK();
           if (data.isNotEmpty) {
@@ -329,7 +351,23 @@ class _HomePageState extends State<HomePage> {
           }
         } catch (e) {
           debugPrint("Read error: $e");
+          // ✅ สั่งให้โชว์ SnackBar สีแดงพร้อมข้อความ Error ที่แท้จริง
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text("$e"), // ข้อความจาก Bluefy จะมาโชว์ตรงนี้
+                backgroundColor: Colors.red,
+                duration: const Duration(seconds: 5),
+                action: SnackBarAction(
+                  label: 'ปิด',
+                  textColor: Colors.white,
+                  onPressed: () {},
+                ),
+              ),
+            );
+          }
         }
+        
       }
 
       if (n == 0 && p == 0 && k == 0) {
@@ -382,6 +420,7 @@ class _HomePageState extends State<HomePage> {
           .add({
         'latitude': position.latitude,
         'longitude': position.longitude,
+        'altitude': altitude,
         'timestamp': FieldValue.serverTimestamp(),
         'n_value': n,
         'p_value': p,
@@ -505,6 +544,13 @@ class _HomePageState extends State<HomePage> {
               Center(
                   child: Text("ความชื้น: ${data['moisture']}%",
                       style: const TextStyle(fontSize: 16))),
+              if (data['altitude'] != null)
+                Center(
+                  child: Text(
+                    "ความสูง: ${data['altitude'].toStringAsFixed(2)} m",
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                ),
             ],
           ),
         );
@@ -549,16 +595,24 @@ class _HomePageState extends State<HomePage> {
         title: const Text("แผนที่และจุดตรวจ"),
         backgroundColor: Colors.green,
         actions: [
+          // ✅ ปุ่มวิเคราะห์ NPK
           IconButton(
-            icon: Icon(
-              _isAutoSaving ? Icons.cloud_sync : Icons.cloud_off,
-              color: _isAutoSaving ? Colors.yellowAccent : Colors.white,
-            ),
-            tooltip: _isAutoSaving
-                ? "ปิดบันทึกอัตโนมัติ"
-                : "เปิดบันทึกเบื้องหลัง",
-            onPressed: _toggleAutoSave,
+            icon: const Icon(Icons.analytics_outlined),
+            tooltip: "วิเคราะห์ค่าดิน NPK",
+            onPressed: _openAnalysisPage,
           ),
+          // ✅ ซ่อนปุ่ม Auto Save เมื่อเปิดบน Web
+          if (!kIsWeb)
+            IconButton(
+              icon: Icon(
+                _isAutoSaving ? Icons.cloud_sync : Icons.cloud_off,
+                color: _isAutoSaving ? Colors.yellowAccent : Colors.white,
+              ),
+              tooltip: _isAutoSaving
+                  ? "ปิดบันทึกอัตโนมัติ"
+                  : "เปิดบันทึกเบื้องหลัง",
+              onPressed: _toggleAutoSave,
+            ),
           IconButton(
             icon: Icon(
               _isBlueConnected
@@ -571,11 +625,8 @@ class _HomePageState extends State<HomePage> {
               if (_isBlueConnected) {
                 _confirmDisconnect();
               } else {
-                BluetoothAdapterState state =
-                    await FlutterBluePlus.adapterState.first;
-                if (state == BluetoothAdapterState.off) {
-                  _checkAndEnableBluetooth();
-                } else {
+                if (kIsWeb) {
+                  // ✅ สำหรับ Web เรียก UI เบราว์เซอร์เลย
                   await showBluetoothScanDialog(
                     context: context,
                     onConnected: () =>
@@ -583,6 +634,21 @@ class _HomePageState extends State<HomePage> {
                     onDisconnected: () =>
                         setState(() => _isBlueConnected = false),
                   );
+                } else {
+                  // ✅ สำหรับ Mobile เช็คสถานะก่อน
+                  BluetoothAdapterState state =
+                      await FlutterBluePlus.adapterState.first;
+                  if (state == BluetoothAdapterState.off) {
+                    _checkAndEnableBluetooth();
+                  } else {
+                    await showBluetoothScanDialog(
+                      context: context,
+                      onConnected: () =>
+                          setState(() => _isBlueConnected = true),
+                      onDisconnected: () =>
+                          setState(() => _isBlueConnected = false),
+                    );
+                  }
                 }
               }
             },
@@ -654,7 +720,7 @@ class _HomePageState extends State<HomePage> {
 
           return Column(
             children: [
-              if (_isAutoSaving)
+              if (_isAutoSaving && !kIsWeb)
                 Container(
                   color: Colors.yellow[700],
                   width: double.infinity,
@@ -698,6 +764,15 @@ class _HomePageState extends State<HomePage> {
                     Text("รายการตรวจ (${docs.length} จุด)",
                         style: const TextStyle(
                             fontWeight: FontWeight.bold, fontSize: 16)),
+                    // ✅ ปุ่มวิเคราะห์ในแถบรายการ
+                    TextButton.icon(
+                      onPressed: _openAnalysisPage,
+                      icon: const Icon(Icons.analytics,
+                          size: 16, color: Colors.teal),
+                      label: const Text("วิเคราะห์",
+                          style: TextStyle(
+                              color: Colors.teal, fontSize: 13)),
+                    ),
                     Text(
                         _isDescending
                             ? "(ล่าสุดก่อน)"
@@ -751,14 +826,31 @@ class _HomePageState extends State<HomePage> {
           );
         },
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _addNewPoint,
-        label: Text(_isBlueConnected ? "อ่านค่า & บันทึก" : "บันทึก"),
-        icon: Icon(_isBlueConnected
-            ? Icons.bluetooth_audio
-            : Icons.add_location_alt),
-        backgroundColor:
-            _isBlueConnected ? Colors.blue[700] : Colors.green,
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // ✅ FAB วิเคราะห์ (เล็ก)
+          FloatingActionButton.small(
+            heroTag: "fab_analysis",
+            onPressed: _openAnalysisPage,
+            backgroundColor: Colors.teal,
+            tooltip: "วิเคราะห์ค่าดิน",
+            child: const Icon(Icons.analytics, color: Colors.white),
+          ),
+          const SizedBox(height: 10),
+          // FAB บันทึก (ใหญ่)
+          FloatingActionButton.extended(
+            heroTag: "fab_save",
+            onPressed: _addNewPoint,
+            label: Text(_isBlueConnected ? "อ่านค่า & บันทึก" : "บันทึก"),
+            icon: Icon(_isBlueConnected
+                ? Icons.bluetooth_audio
+                : Icons.add_location_alt),
+            backgroundColor:
+                _isBlueConnected ? Colors.blue[700] : Colors.green,
+          ),
+        ],
       ),
     );
   }

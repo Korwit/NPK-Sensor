@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'firebase_options.dart';
-import 'background_service.dart'; // initializeService อยู่ที่นี่
 import 'login_page.dart';
 import 'projects_page.dart';
+
+// import background service เฉพาะ mobile
+import 'background_service.dart'
+    if (dart.library.html) 'background_service_stub.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,7 +19,9 @@ Future<void> main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  await initializeService();
+  if (!kIsWeb) {
+    await initializeService();
+  }
 
   runApp(const MyApp());
 }
