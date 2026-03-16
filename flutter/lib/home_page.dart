@@ -5,6 +5,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart'; 
 import 'package:intl/intl.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -34,6 +35,8 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  User? get currentUser => FirebaseAuth.instance.currentUser;
+
   final MapController _mapController = MapController();
   LatLng _currentPosition = const LatLng(13.7563, 100.5018);
   double _currentAltitude = 0;
@@ -44,6 +47,8 @@ class _HomePageState extends State<HomePage> {
   bool _isBlueConnected = false;
   bool _isAutoSaving = false;
   bool _isToggling = false;
+
+  Map<String, int>? _lastSavedNPK;
 
   StreamSubscription? _ackSubscription;
 
@@ -111,7 +116,7 @@ class _HomePageState extends State<HomePage> {
           children: [
             Icon(Icons.bluetooth_disabled, color: Colors.red),
             SizedBox(width: 10),
-            Flexible(child: Text("บลูทูธปิดอยู่")), // ✅
+            Flexible(child: Text("บลูทูธปิดอยู่")),
           ],
         ),
         content: const Text(
@@ -223,6 +228,8 @@ class _HomePageState extends State<HomePage> {
         SharedPreferences prefs = await SharedPreferences.getInstance();
         await prefs.setString('bg_garden_id', widget.gardenId);
         await prefs.setString('bg_inspect_id', widget.inspectionDateId);
+        await prefs.setString('bg_user_uid', currentUser?.uid ?? '');     
+        await prefs.setString('bg_user_email', currentUser?.email ?? ''); 
 
         bool isRunning = await service.isRunning();
         if (isRunning) {
@@ -289,6 +296,7 @@ class _HomePageState extends State<HomePage> {
         builder: (ctx) => SoilAnalysisPage(
           gardenId: widget.gardenId,
           inspectionDateId: widget.inspectionDateId,
+          userRole: widget.userRole, 
         ),
       ),
     );
@@ -329,6 +337,10 @@ class _HomePageState extends State<HomePage> {
             k = data['k'] ?? 0;
             moisture = data['moisture'] ?? 0;
             source = "Sensor (BLE)";
+
+            if (data['isStale'] == 1) {
+              source = "Manual"; 
+            }
           }
         } catch (e) {
           debugPrint("Read error: $e");
@@ -338,11 +350,7 @@ class _HomePageState extends State<HomePage> {
                 content: Text("$e"),
                 backgroundColor: Colors.red,
                 duration: const Duration(seconds: 5),
-                action: SnackBarAction(
-                  label: 'ปิด',
-                  textColor: Colors.white,
-                  onPressed: () {},
-                ),
+                action: SnackBarAction(label: 'ปิด', textColor: Colors.white, onPressed: () {}),
               ),
             );
           }
@@ -361,32 +369,30 @@ class _HomePageState extends State<HomePage> {
                 children: [
                   Icon(Icons.warning_amber_rounded, color: Colors.orange),
                   SizedBox(width: 10),
-                  Flexible(child: Text("แจ้งเตือนค่าเป็น 0")), // ✅
+                  Flexible(child: Text("แจ้งเตือนค่าเป็น 0")),
                 ],
               ),
               content: const Text(
-                "ค่า N P K เป็น 0 ทั้งหมด\n\n"
-                "• หากคุณต้องการค่าจริง: กรุณาเชื่อมต่อ ESP32 หรือตรวจสอบเซนเซอร์\n"
+                "ค่า N P K เป็น 0 ทั้งหมด (หรือเป็นข้อมูลซ้ำ)\n\n"
+                "• หากคุณต้องการค่าจริง: กรุณากดส่งข้อมูลที่เซนเซอร์ก่อน\n"
                 "• หากต้องการบันทึกค่า 0: กดยืนยันด้านล่าง",
               ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text("ยกเลิก (ไปเชื่อมต่อ)"),
+                  child: const Text("ยกเลิก (ไปกดที่เซนเซอร์)"),
                 ),
                 ElevatedButton(
                   onPressed: () => Navigator.pop(ctx, true),
-                  style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.grey),
-                  child: const Text("บันทึกค่า 0",
-                      style: TextStyle(color: Colors.white)),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+                  child: const Text("บันทึกค่า 0", style: TextStyle(color: Colors.white)),
                 ),
               ],
             ),
           );
 
           if (confirm != true) return;
-          if (mounted) _showLoadingDialog(context);
+          if (mounted) _showLoadingDialog(context); 
         }
       }
 
@@ -406,10 +412,17 @@ class _HomePageState extends State<HomePage> {
         'k_value': k,
         'moisture': moisture,
         'source': source,
+        'created_by_uid': currentUser?.uid,       
+        'created_by_email': currentUser?.email,   
       });
 
       if (mounted) {
-        Navigator.pop(context);
+        Navigator.pop(context); 
+        
+        if (source == "Sensor (BLE)") {
+          BLEService().markAsSaved(n, p, k, moisture);
+        }
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
               content: Text("บันทึกสำเร็จ! (N:$n P:$p K:$k)"),
@@ -470,75 +483,102 @@ class _HomePageState extends State<HomePage> {
 
   void _showMarkerDetails(String docId, Map<String, dynamic> data) {
     bool isOwner = (widget.userRole == 'owner');
+    String createdByUid = data['created_by_uid'] ?? '';
+    String createdByEmail = data['created_by_email'] ?? 'ไม่ระบุ';
+    bool isCreator = (currentUser?.uid != null && createdByUid == currentUser?.uid);
+    bool canDelete = isOwner || isCreator; 
+
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true, 
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (context) {
-        return Container(
-          padding: const EdgeInsets.all(20),
-          height: 300,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        return SingleChildScrollView( 
+          child: Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom, 
+            ),
+            child: Container(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min, 
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded( // ✅
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text("ข้อมูลจุดตรวจ",
-                            style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold)),
-                        Text(_formatDateTime(data['timestamp']),
-                            style: const TextStyle(
-                                fontSize: 14, color: Colors.grey)),
-                        if (data['source'] != null)
-                          Text("ที่มา: ${data['source']}",
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey[600])),
-                      ],
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("ข้อมูลจุดตรวจ",
+                                style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold)),
+                            Text(_formatDateTime(data['timestamp']),
+                                style: const TextStyle(
+                                    fontSize: 14, color: Colors.grey)),
+                            if (data['source'] != null)
+                              Text("ที่มา: ${data['source']}",
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey[600])),
+                            
+                            if (data['created_by_email'] != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2.0),
+                                child: Text("ผู้บันทึก: $createdByEmail",
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.teal[700],
+                                        fontWeight: FontWeight.bold)),
+                              ),
+                          ],
+                        ),
+                      ),
+                      if (canDelete) 
+                        IconButton(
+                            icon:
+                                const Icon(Icons.delete, color: Colors.red),
+                            onPressed: () {
+                              Navigator.pop(context);
+                              _deletePoint(docId);
+                            }),
+                    ],
+                  ),
+                  const Divider(),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      Flexible(
+                          child: _buildValueBox(
+                              "N", "${data['n_value']}", Colors.blue)),
+                      Flexible(
+                          child: _buildValueBox(
+                              "P", "${data['p_value']}", Colors.green)),
+                      Flexible(
+                          child: _buildValueBox(
+                              "K", "${data['k_value']}", Colors.orange)),
+                    ],
+                  ),
+                  const SizedBox(height: 15),
+                  Center(
+                      child: Text("ความชื้น: ${data['moisture']}%",
+                          style: const TextStyle(fontSize: 16))),
+                  if (data['altitude'] != null)
+                    Center(
+                      child: Text(
+                        "ความสูง: ${data['altitude'].toStringAsFixed(2)} m",
+                        style: const TextStyle(fontSize: 16),
+                      ),
                     ),
-                  ),
-                  if (isOwner)
-                    IconButton(
-                        icon:
-                            const Icon(Icons.delete, color: Colors.red),
-                        onPressed: () {
-                          Navigator.pop(context);
-                          _deletePoint(docId);
-                        }),
+                  const SizedBox(height: 10), 
                 ],
               ),
-              const Divider(),
-              const SizedBox(height: 10),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  Flexible( // ✅
-                    child: _buildValueBox(
-                        "N", "${data['n_value']}", Colors.blue)),
-                  Flexible( // ✅
-                    child: _buildValueBox(
-                        "P", "${data['p_value']}", Colors.green)),
-                  Flexible( // ✅
-                    child: _buildValueBox(
-                        "K", "${data['k_value']}", Colors.orange)),
-                ],
-              ),
-              const SizedBox(height: 20),
-              Center(
-                  child: Text("ความชื้น: ${data['moisture']}%",
-                      style: const TextStyle(fontSize: 16))),
-              if (data['altitude'] != null)
-                Center(
-                  child: Text(
-                    "ความสูง: ${data['altitude'].toStringAsFixed(2)} m",
-                    style: const TextStyle(fontSize: 16),
-                  ),
-                ),
-            ],
+            ),
           ),
         );
       },
@@ -547,6 +587,7 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildValueBox(String label, String value, Color color) {
     return Column(
+      mainAxisSize: MainAxisSize.min, 
       children: [
         Text(label,
             style: TextStyle(
@@ -563,7 +604,7 @@ class _HomePageState extends State<HomePage> {
           child: Text(value,
               style: const TextStyle(
                   fontSize: 20, fontWeight: FontWeight.bold),
-              overflow: TextOverflow.ellipsis), // ✅
+              overflow: TextOverflow.ellipsis),
         ),
       ],
     );
@@ -583,11 +624,6 @@ class _HomePageState extends State<HomePage> {
         title: const Text("แผนที่และจุดตรวจ"),
         backgroundColor: Colors.green,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.analytics_outlined),
-            tooltip: "วิเคราะห์ค่าดิน NPK",
-            onPressed: _openAnalysisPage,
-          ),
           if (!kIsWeb)
             IconButton(
               icon: Icon(
@@ -667,15 +703,18 @@ class _HomePageState extends State<HomePage> {
             .orderBy('timestamp', descending: _isDescending)
             .snapshots(),
         builder: (context, snapshot) {
-          if (snapshot.hasError)
+          if (snapshot.hasError) {
             return Center(
                 child: Text("Error: ${snapshot.error}"));
-          if (!snapshot.hasData)
+          }
+          if (!snapshot.hasData) {
             return const Center(
                 child: CircularProgressIndicator());
+          }
 
           var docs = snapshot.data!.docs;
           List<Marker> mapMarkers = [];
+          Marker? activeMarker; 
 
           for (int i = 0; i < docs.length; i++) {
             var data = docs[i].data() as Map<String, dynamic>;
@@ -683,7 +722,7 @@ class _HomePageState extends State<HomePage> {
                 LatLng(data['latitude'] ?? 0, data['longitude'] ?? 0);
             bool isSelected = (i == _selectedIndex);
 
-            mapMarkers.add(Marker(
+            Marker marker = Marker(
               point: point,
               width: 60,
               height: 60,
@@ -697,7 +736,13 @@ class _HomePageState extends State<HomePage> {
                     : const Icon(Icons.location_on,
                         color: Colors.red, size: 40),
               ),
-            ));
+            );
+
+            if (isSelected) {
+              activeMarker = marker;
+            } else {
+              mapMarkers.add(marker);
+            }
           }
 
           if (!_isLoadingLocation) {
@@ -707,6 +752,10 @@ class _HomePageState extends State<HomePage> {
                 height: 40,
                 child: const Icon(Icons.my_location,
                     color: Colors.blue, size: 30)));
+          }
+
+          if (activeMarker != null) {
+            mapMarkers.add(activeMarker);
           }
 
           return Column(
@@ -721,7 +770,7 @@ class _HomePageState extends State<HomePage> {
                     children: [
                       Icon(Icons.sync, size: 16),
                       SizedBox(width: 8),
-                      Flexible( // ✅
+                      Flexible(
                         child: Text(
                             "กำลังบันทึกพิกัดอัตโนมัติเบื้องหลัง...",
                             style: TextStyle(
@@ -756,7 +805,7 @@ class _HomePageState extends State<HomePage> {
                 width: double.infinity,
                 child: Row(
                   children: [
-                    Flexible( // ✅
+                    Flexible(
                       child: Text(
                           "รายการตรวจ (${docs.length} จุด)",
                           style: const TextStyle(
@@ -785,9 +834,14 @@ class _HomePageState extends State<HomePage> {
                   padding: const EdgeInsets.only(bottom: 100),
                   itemCount: docs.length,
                   itemBuilder: (context, index) {
-                    var data =
-                        docs[index].data() as Map<String, dynamic>;
+                    var data = docs[index].data() as Map<String, dynamic>;
                     bool isSelected = (index == _selectedIndex);
+                    
+                    String createdByUid = data['created_by_uid'] ?? '';
+                    String createdByEmail = data['created_by_email'] ?? 'ไม่ระบุ';
+                    bool isCreator = (currentUser?.uid != null && createdByUid == currentUser?.uid);
+                    bool canDelete = isOwner || isCreator;
+
                     return Card(
                       color: isSelected
                           ? Colors.green[100]
@@ -807,19 +861,31 @@ class _HomePageState extends State<HomePage> {
                             style: const TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.bold)),
-                        subtitle: Text(
-                            "N: ${data['n_value']} P: ${data['p_value']} K: ${data['k_value']}"),
-                        trailing: isOwner
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 4.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text("N: ${data['n_value']} P: ${data['p_value']} K: ${data['k_value']}"),
+                              const SizedBox(height: 2),
+                              Text("ผู้บันทึก: $createdByEmail", style: TextStyle(fontSize: 11, color: Colors.teal[700])),
+                            ],
+                          ),
+                        ),
+                        trailing: canDelete
                             ? IconButton(
                                 icon: const Icon(Icons.delete,
                                     color: Colors.red),
                                 onPressed: () =>
                                     _deletePoint(docs[index].id))
                             : null,
-                        onTap: () => _selectPoint(
+                        onTap: () {
+                          _selectPoint(
                             index,
-                            LatLng(data['latitude'],
-                                data['longitude'])),
+                            LatLng(data['latitude'], data['longitude'])
+                          );
+                          _showMarkerDetails(docs[index].id, data); 
+                        },
                       ),
                     );
                   },
@@ -829,31 +895,16 @@ class _HomePageState extends State<HomePage> {
           );
         },
       ),
-      floatingActionButton: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          FloatingActionButton.small(
-            heroTag: "fab_analysis",
-            onPressed: _openAnalysisPage,
-            backgroundColor: Colors.teal,
-            tooltip: "วิเคราะห์ค่าดิน",
-            child: const Icon(Icons.analytics, color: Colors.white),
-          ),
-          const SizedBox(height: 10),
-          FloatingActionButton.extended(
-            heroTag: "fab_save",
-            onPressed: _addNewPoint,
-            label: Text(
-                _isBlueConnected ? "อ่านค่า & บันทึก" : "บันทึก"),
-            icon: Icon(_isBlueConnected
-                ? Icons.bluetooth_audio
-                : Icons.add_location_alt),
-            backgroundColor:
-                _isBlueConnected ? Colors.blue[700] : Colors.green,
-          ),
-        ],
-      ),
+      // ✅ เปลี่ยนลอจิก: จะแสดงปุ่มก็ต่อเมื่อเชื่อมต่อบลูทูธแล้วเท่านั้น
+      floatingActionButton: _isBlueConnected
+          ? FloatingActionButton.extended(
+              heroTag: "fab_save",
+              onPressed: _addNewPoint,
+              label: const Text("อ่านค่า & บันทึก", style: TextStyle(color: Colors.white)),
+              icon: const Icon(Icons.bluetooth_audio, color: Colors.white),
+              backgroundColor: Colors.blue[700],
+            )
+          : null, // ✅ ถ้ายังไม่เชื่อมต่อ ให้ซ่อนปุ่มไปเลย
     );
   }
 }

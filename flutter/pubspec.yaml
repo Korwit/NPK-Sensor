@@ -55,6 +55,8 @@ dependencies:
   pdf: ^3.11.1
   printing: ^5.13.1
   
+ 
+  
   firebase_ai: ^3.6.1
   flutter_background_service_android: ^6.2.2
   flutter_local_notifications: ^17.0.0  # ต้องมี package นี้

@@ -36,7 +36,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                   'owner_uid': user?.uid,
                   'members': [user?.uid],
                   'roles': {user?.uid: 'owner'},
-                  'nicknames': {user?.uid: 'ฉัน (เจ้าของสูงสุด)'}, // ยังเก็บใน Garden อยู่
+                  'nicknames': {user?.uid: 'ฉัน (เจ้าของ)'}, // ยังเก็บใน Garden อยู่
                   'created_at': FieldValue.serverTimestamp(),
                 });
                 Navigator.pop(context);
@@ -197,7 +197,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                 ),
                 RadioListTile<String>(
                   title: const Text("ผู้ช่วยเจ้าของ (Co-Owner)"),
-                  subtitle: const Text("จัดการสวนได้ (แต่ลบโปรเจคไม่ได้)"),
+                  subtitle: const Text("จัดการสวนได้ (ลบโปรเจคไม่ได้)"),
                   value: 'owner',
                   groupValue: newRole,
                   onChanged: (value) => setStateDialog(() => newRole = value!),
@@ -379,7 +379,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                               RadioListTile<String>(
                                 contentPadding: EdgeInsets.zero,
                                 title: const Text("ผู้ช่วยเจ้าของ (Co-Owner)"),
-                                subtitle: const Text("จัดการสวนได้ (แต่ลบโปรเจคไม่ได้)"),
+                                subtitle: const Text("จัดการสวนได้ (ลบโปรเจคไม่ได้)"),
                                 value: 'owner',
                                 groupValue: selectedRole,
                                 activeColor: Colors.orange,
@@ -500,7 +500,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
     String roleText;
     
     if (isPrimaryOwner) {
-      roleText = "เจ้าของสูงสุด";
+      roleText = "เจ้าของ";
     } else if (role == 'owner') roleText = "ผู้ช่วย";
     else roleText = "ทีมงาน";
 
@@ -671,7 +671,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
                   ),
                   title: Text(gardenName, style: const TextStyle(fontWeight: FontWeight.bold)),
                   subtitle: Text(
-                    isPrimaryOwner ? "สถานะ: เจ้าของสูงสุด" 
+                    isPrimaryOwner ? "สถานะ: เจ้าของ" 
                     : (isCoOwner ? "สถานะ: ผู้ช่วยเจ้าของ" : "สถานะ: ทีมงาน")
                   ), 
                   

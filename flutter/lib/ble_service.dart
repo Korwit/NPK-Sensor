@@ -12,14 +12,21 @@ class BLEService {
   BluetoothDevice? connectedDevice;
   StreamSubscription? _notifySubscription;
 
-  // ✅ flag กัน double save — set true ตอน readNPK() (manual) เพื่อ skip background invoke
   bool _isManualReading = false;
+
+  // ✅ ตัวแปรระดับ Global อยู่ตลอดการเปิดแอป
+  Map<String, int>? _lastSavedData;
 
   final String serviceUuid = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
   final String charUuid    = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
   final String ackUuid     = "beb5483e-36e1-4688-b7f5-ea07361b26a9";
 
   bool get isConnected => connectedDevice != null && connectedDevice!.isConnected;
+
+  // ✅ ฟังก์ชันสำหรับจำค่าเมื่อกดบันทึกลง Firebase สำเร็จ
+  void markAsSaved(int n, int p, int k, int m) {
+    _lastSavedData = {'n': n, 'p': p, 'k': k, 'moisture': m};
+  }
 
   Future<void> connect(BluetoothDevice device) async {
     try {
@@ -40,7 +47,6 @@ class BLEService {
     connectedDevice = null;
   }
 
-  // ─── Subscribe รับ NOTIFY จาก ESP32 ───
   Future<void> _subscribeToNPK() async {
     if (!isConnected || connectedDevice == null) return;
 
@@ -55,7 +61,6 @@ class BLEService {
               _notifySubscription = c.lastValueStream.listen((value) async {
                 if (value.length < 4) return;
 
-                // ✅ ถ้ากำลัง manual read อยู่ ให้ข้ามเพื่อกัน double save
                 if (_isManualReading) {
                   print('[BLE] skip background invoke — manual reading');
                   return;
@@ -68,14 +73,12 @@ class BLEService {
 
                 print('[BLE] รับค่า NOTIFY: N:$n P:$p K:$k Moisture:$moisture');
 
-                // บันทึกลง SharedPreferences
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setInt('latest_n', n);
                 await prefs.setInt('latest_p', p);
                 await prefs.setInt('latest_k', k);
                 await prefs.setInt('latest_moisture', moisture);
 
-                // ส่งไป background service — บันทึก Firestore + GPS
                 FlutterBackgroundService().invoke('updateNPK', {
                   'n': n, 'p': p, 'k': k, 'moisture': moisture,
                 });
@@ -93,42 +96,34 @@ class BLEService {
     }
   }
 
-  // ─── ส่ง ACK "OK" กลับไป ESP32 หลังบันทึก Firestore สำเร็จ ───
-Future<void> writeAck() async {
-  print('[ACK] writeAck() called');
-  print('[ACK] isConnected: $isConnected');
-  print('[ACK] connectedDevice: $connectedDevice');
-  
-  if (!isConnected || connectedDevice == null) {
-    print('[ACK] ❌ return early — not connected');
-    return;
-  }
+  Future<void> writeAck() async {
+    print('[ACK] writeAck() called');
+    
+    if (!isConnected || connectedDevice == null) {
+      print('[ACK] ❌ return early — not connected');
+      return;
+    }
 
-  try {
-    print('[ACK] servicesList count: ${connectedDevice!.servicesList.length}');
-    for (var s in connectedDevice!.servicesList) {
-      print('[ACK] service: ${s.uuid}');
-      for (var c in s.characteristics) {
-        print('[ACK]   char: ${c.uuid}');
-        if (c.uuid.toString() == ackUuid) {
-          print('[ACK] ✅ found ACK char — writing OK...');
-          await c.write(utf8.encode("OK"), withoutResponse: false);
-          print('[ACK] ✅ write done');
-          return;
+    try {
+      for (var s in connectedDevice!.servicesList) {
+        for (var c in s.characteristics) {
+          if (c.uuid.toString() == ackUuid) {
+            print('[ACK] ✅ found ACK char — writing OK...');
+            await c.write(utf8.encode("OK"), withoutResponse: false);
+            print('[ACK] ✅ write done');
+            return;
+          }
         }
       }
+      print('[ACK] ❌ ACK Characteristic ไม่พบ');
+    } catch (e) {
+      print('[ACK] ❌ Error: $e');
     }
-    print('[ACK] ❌ ACK Characteristic ไม่พบ');
-  } catch (e) {
-    print('[ACK] ❌ Error: $e');
   }
-}
 
-  // ─── อ่านค่าแบบ manual (กดปุ่มในแอป) ───
   Future<Map<String, int>> readNPK() async {
     if (!isConnected || connectedDevice == null) return {};
 
-    // ✅ set flag ก่อน read เพื่อกัน lastValueStream invoke background ซ้ำ
     _isManualReading = true;
 
     try {
@@ -142,11 +137,27 @@ Future<void> writeAck() async {
             if (c.uuid.toString() == charUuid) {
               final value = await c.read();
               if (value.length >= 4) {
+                int n = value[0];
+                int p = value[1];
+                int k = value[2];
+                int moist = value[3];
+
+                // ✅ เช็กข้อมูลซ้ำ (Stale Data Guard)
+                if (_lastSavedData != null &&
+                    n == _lastSavedData!['n'] &&
+                    p == _lastSavedData!['p'] &&
+                    k == _lastSavedData!['k'] &&
+                    moist == _lastSavedData!['moisture']) {
+                  
+                  return {'n': 0, 'p': 0, 'k': 0, 'moisture': 0, 'isStale': 1};
+                }
+
                 return {
-                  'n': value[0],
-                  'p': value[1],
-                  'k': value[2],
-                  'moisture': value[3],
+                  'n': n,
+                  'p': p,
+                  'k': k,
+                  'moisture': moist,
+                  'isStale': 0
                 };
               }
             }
@@ -156,7 +167,6 @@ Future<void> writeAck() async {
     } catch (e) {
       print('[BLE] Read Error: $e');
     } finally {
-      // ✅ clear flag เสมอ ไม่ว่าจะสำเร็จหรือ error
       _isManualReading = false;
     }
 

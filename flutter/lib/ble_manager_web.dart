@@ -12,11 +12,19 @@ class BLEService {
   BluetoothDevice? connectedDevice;
   bool _isManualReading = false;
 
+  // ✅ ตัวแปรระดับ Global อยู่ตลอดการเปิดแอป
+  Map<String, int>? _lastSavedData;
+
   final String serviceUuid = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
   final String charUuid    = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
   final String ackUuid     = "beb5483e-36e1-4688-b7f5-ea07361b26a9";
 
   bool get isConnected => connectedDevice != null;
+
+  // ✅ ฟังก์ชันสำหรับจำค่าเมื่อกดบันทึกลง Firebase สำเร็จ
+  void markAsSaved(int n, int p, int k, int m) {
+    _lastSavedData = {'n': n, 'p': p, 'k': k, 'moisture': m};
+  }
 
   Future<void> connect(BluetoothDevice device, {VoidCallback? onDisconnected}) async {
     try {
@@ -52,14 +60,12 @@ class BLEService {
 
   Future<Map<String, int>> readNPK() async {
     if (!isConnected || connectedDevice == null) {
-      // โยน Error ถ้าสถานะคือ Disconnect ไปแล้ว
       throw Exception("อุปกรณ์ไม่ได้เชื่อมต่อ หรือสัญญาณบลูทูธหลุดไปแล้ว");
     }
     _isManualReading = true;
     try {
       final services = await connectedDevice!.discoverServices();
       
-      // ค้นหา Service พร้อมดัก Error ถ้าหาไม่เจอ
       final service = services.firstWhere(
         (s) => s.uuid.toLowerCase() == serviceUuid.toLowerCase(),
         orElse: () => throw Exception("ไม่พบ Service UUID ($serviceUuid) บนอุปกรณ์นี้")
@@ -71,13 +77,27 @@ class BLEService {
       final data = value.buffer.asUint8List();
       
       if (data.length >= 4) {
-        return {'n': data[0], 'p': data[1], 'k': data[2], 'moisture': data[3]};
+        int n = data[0];
+        int p = data[1];
+        int k = data[2];
+        int moist = data[3];
+
+        // ✅ เช็กข้อมูลซ้ำ (Stale Data Guard)
+        if (_lastSavedData != null &&
+            n == _lastSavedData!['n'] &&
+            p == _lastSavedData!['p'] &&
+            k == _lastSavedData!['k'] &&
+            moist == _lastSavedData!['moisture']) {
+          
+          return {'n': 0, 'p': 0, 'k': 0, 'moisture': 0, 'isStale': 1};
+        }
+
+        return {'n': n, 'p': p, 'k': k, 'moisture': moist, 'isStale': 0};
       } else {
         throw Exception("ข้อมูลที่ส่งมาไม่ครบ 4 ไบต์ (ได้มา ${data.length} ไบต์)");
       }
     } catch (e) {
       debugPrint('[BLE Web] Read Error: $e');
-      // ✅ โยน Error ออกไปให้ UI หน้า home_page จับเพื่อโชว์แจ้งเตือน
       throw Exception("Bluefy Error: $e");
     } finally {
       _isManualReading = false;
