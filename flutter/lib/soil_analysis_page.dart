@@ -3,6 +3,8 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import 'package:firebase_ai/firebase_ai.dart';
+import 'soil_chart_dialog.dart';
 
 class SoilAnalysisPage extends StatefulWidget {
   final String gardenId;
@@ -21,62 +23,288 @@ class SoilAnalysisPage extends StatefulWidget {
 class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
   final MapController _mapController = MapController();
 
-  // ค่า NPK ที่คาดหวัง
-  final TextEditingController _expectedNController =
-      TextEditingController(text: '30');
-  final TextEditingController _expectedPController =
-      TextEditingController(text: '30');
-  final TextEditingController _expectedKController =
-      TextEditingController(text: '30');
+  final TextEditingController _expectedNController = TextEditingController(
+    text: '30',
+  );
+  final TextEditingController _expectedPController = TextEditingController(
+    text: '30',
+  );
+  final TextEditingController _expectedKController = TextEditingController(
+    text: '30',
+  );
+  final TextEditingController _chatInputController = TextEditingController();
+  final ScrollController _chatScrollController = ScrollController();
 
-  // tolerance ± %
   double _tolerance = 40.0;
+  bool _inputExpanded = true;
 
   List<_PointData> _points = [];
   bool _isLoading = false;
   bool _hasAnalyzed = false;
 
+  List<_ChatMessage> _chatMessages = [];
+  bool _isAiLoading = false;
+
   int get _expectedN => int.tryParse(_expectedNController.text) ?? 0;
   int get _expectedP => int.tryParse(_expectedPController.text) ?? 0;
   int get _expectedK => int.tryParse(_expectedKController.text) ?? 0;
+
+  double get _avgN => _points.isEmpty
+      ? 0
+      : _points.map((p) => p.n).reduce((a, b) => a + b) / _points.length;
+  double get _avgP => _points.isEmpty
+      ? 0
+      : _points.map((p) => p.p).reduce((a, b) => a + b) / _points.length;
+  double get _avgK => _points.isEmpty
+      ? 0
+      : _points.map((p) => p.k).reduce((a, b) => a + b) / _points.length;
+  double get _avgMoisture => _points.isEmpty
+      ? 0
+      : _points.map((p) => p.moisture).reduce((a, b) => a + b) / _points.length;
 
   @override
   void dispose() {
     _expectedNController.dispose();
     _expectedPController.dispose();
     _expectedKController.dispose();
+    _chatInputController.dispose();
+    _chatScrollController.dispose();
     super.dispose();
   }
 
-  // ─────────────────────────────────────────────
-  // วิเคราะห์ค่าแต่ละจุด
-  // ─────────────────────────────────────────────
   _PointStatus _evaluatePoint(_PointData p) {
     if (_expectedN == 0 && _expectedP == 0 && _expectedK == 0) {
       return _PointStatus.neutral;
     }
-
     double scoreN = _expectedN > 0 ? p.n / _expectedN : 1.0;
     double scoreP = _expectedP > 0 ? p.p / _expectedP : 1.0;
     double scoreK = _expectedK > 0 ? p.k / _expectedK : 1.0;
-
     double tLow = 1.0 - (_tolerance / 100);
     double tHigh = 1.0 + (_tolerance / 100);
-
     bool nOk = _expectedN == 0 || (scoreN >= tLow && scoreN <= tHigh);
     bool pOk = _expectedP == 0 || (scoreP >= tLow && scoreP <= tHigh);
     bool kOk = _expectedK == 0 || (scoreK >= tLow && scoreK <= tHigh);
-
     int okCount = [nOk, pOk, kOk].where((b) => b).length;
-
     if (okCount == 3) return _PointStatus.good;
     if (okCount == 2) return _PointStatus.warning;
     return _PointStatus.bad;
   }
 
+  List<_FertilizerAdvice> _getFertilizerAdvices() {
+    if (_points.isEmpty) return [];
+    final List<_FertilizerAdvice> advices = [];
+    final double tLow = 1.0 - (_tolerance / 100);
+    final double tHigh = 1.0 + (_tolerance / 100);
+
+    if (_expectedN > 0) {
+      final double ratioN = _avgN / _expectedN;
+      if (ratioN < tLow) {
+        final double deficit = _expectedN - _avgN;
+        advices.add(
+          _FertilizerAdvice(
+            nutrient: 'N (ไนโตรเจน)',
+            status: _NutrientStatus.low,
+            avgValue: _avgN,
+            expectedValue: _expectedN.toDouble(),
+            fertilizerName: 'ยูเรีย (46-0-0)',
+            fertilizerDetail:
+                'ปุ๋ยไนโตรเจนสูง เหมาะสำหรับเร่งการเจริญเติบโตและสีเขียวของใบ',
+            dosageHint:
+                'ขาด N ประมาณ ${deficit.toStringAsFixed(1)} mg/kg — ควรใส่ยูเรียประมาณ ${(deficit * 2.17).toStringAsFixed(1)} kg/ไร่',
+            color: Colors.blue,
+          ),
+        );
+      } else if (ratioN > tHigh) {
+        advices.add(
+          _FertilizerAdvice(
+            nutrient: 'N (ไนโตรเจน)',
+            status: _NutrientStatus.high,
+            avgValue: _avgN,
+            expectedValue: _expectedN.toDouble(),
+            fertilizerName: '-',
+            fertilizerDetail: 'ไม่ควรใส่ปุ๋ยไนโตรเจนเพิ่ม',
+            dosageHint:
+                'ค่า N สูงเกินเกณฑ์ ควรงดปุ๋ยไนโตรเจนในรอบนี้ และเพิ่มการระบายน้ำ',
+            color: Colors.orange,
+          ),
+        );
+      }
+    }
+
+    if (_expectedP > 0) {
+      final double ratioP = _avgP / _expectedP;
+      if (ratioP < tLow) {
+        final double deficit = _expectedP - _avgP;
+        advices.add(
+          _FertilizerAdvice(
+            nutrient: 'P (ฟอสฟอรัส)',
+            status: _NutrientStatus.low,
+            avgValue: _avgP,
+            expectedValue: _expectedP.toDouble(),
+            fertilizerName: 'DAP (18-46-0)',
+            fertilizerDetail: 'ปุ๋ยฟอสฟอรัสสูง ช่วยพัฒนารากและการออกดอกติดผล',
+            dosageHint:
+                'ขาด P ประมาณ ${deficit.toStringAsFixed(1)} mg/kg — ควรใส่ DAP ประมาณ ${(deficit * 2.17).toStringAsFixed(1)} kg/ไร่',
+            color: Colors.green[700]!,
+          ),
+        );
+      } else if (ratioP > tHigh) {
+        advices.add(
+          _FertilizerAdvice(
+            nutrient: 'P (ฟอสฟอรัส)',
+            status: _NutrientStatus.high,
+            avgValue: _avgP,
+            expectedValue: _expectedP.toDouble(),
+            fertilizerName: '-',
+            fertilizerDetail: 'ไม่ควรใส่ปุ๋ยฟอสฟอรัสเพิ่ม',
+            dosageHint:
+                'ค่า P สูงเกินเกณฑ์ อาจทำให้ดินแข็งและดูดซับธาตุเหล็กลดลง',
+            color: Colors.orange,
+          ),
+        );
+      }
+    }
+
+    if (_expectedK > 0) {
+      final double ratioK = _avgK / _expectedK;
+      if (ratioK < tLow) {
+        final double deficit = _expectedK - _avgK;
+        advices.add(
+          _FertilizerAdvice(
+            nutrient: 'K (โพแทสเซียม)',
+            status: _NutrientStatus.low,
+            avgValue: _avgK,
+            expectedValue: _expectedK.toDouble(),
+            fertilizerName: 'MOP / โพแทสเซียมคลอไรด์ (0-0-60)',
+            fertilizerDetail:
+                'ปุ๋ยโพแทสเซียมสูง ช่วยเพิ่มความแข็งแรงของลำต้นและคุณภาพผลผลิต',
+            dosageHint:
+                'ขาด K ประมาณ ${deficit.toStringAsFixed(1)} mg/kg — ควรใส่ MOP ประมาณ ${(deficit * 1.67).toStringAsFixed(1)} kg/ไร่',
+            color: Colors.orange[800]!,
+          ),
+        );
+      } else if (ratioK > tHigh) {
+        advices.add(
+          _FertilizerAdvice(
+            nutrient: 'K (โพแทสเซียม)',
+            status: _NutrientStatus.high,
+            avgValue: _avgK,
+            expectedValue: _expectedK.toDouble(),
+            fertilizerName: '-',
+            fertilizerDetail: 'ไม่ควรใส่ปุ๋ยโพแทสเซียมเพิ่ม',
+            dosageHint: 'ค่า K สูงเกินเกณฑ์ อาจรบกวนการดูดซึม Mg และ Ca ของพืช',
+            color: Colors.orange,
+          ),
+        );
+      }
+    }
+
+    return advices;
+  }
+
+  String _buildSoilContext() {
+    final advices = _getFertilizerAdvices();
+    final adviceSummary = advices.isEmpty
+        ? 'ค่า NPK ทุกตัวอยู่ในเกณฑ์ปกติ'
+        : advices
+              .map(
+                (a) =>
+                    '${a.nutrient}: เฉลี่ย ${a.avgValue.toStringAsFixed(1)} mg/kg '
+                    '(คาดหวัง ${a.expectedValue.toStringAsFixed(0)} mg/kg) — '
+                    '${a.status == _NutrientStatus.low ? "ต่ำกว่าเกณฑ์" : "สูงกว่าเกณฑ์"}',
+              )
+              .join('\n');
+
+    return '''
+คุณเป็นนักวิชาการเกษตรผู้เชี่ยวชาญด้านการวิเคราะห์ดินและการจัดการธาตุอาหารพืช
+ตอบเป็นภาษาไทย กระชับ เข้าใจง่ายสำหรับเกษตรกร
+
+ข้อมูลผลการตรวจดินของผู้ใช้:
+- จำนวนจุดตรวจ: ${_points.length} จุด
+- ค่าเฉลี่ย N (ไนโตรเจน): ${_avgN.toStringAsFixed(1)} mg/kg (คาดหวัง $_expectedN mg/kg)
+- ค่าเฉลี่ย P (ฟอสฟอรัส): ${_avgP.toStringAsFixed(1)} mg/kg (คาดหวัง $_expectedP mg/kg)
+- ค่าเฉลี่ย K (โพแทสเซียม): ${_avgK.toStringAsFixed(1)} mg/kg (คาดหวัง $_expectedK mg/kg)
+- ความชื้นเฉลี่ย: ${_avgMoisture.toStringAsFixed(1)}%
+- ช่วง tolerance: ±${_tolerance.toInt()}%
+- สรุปเบื้องต้น: $adviceSummary
+''';
+  }
+
+  Future<void> _sendChat(String userText) async {
+    if (userText.trim().isEmpty) return;
+
+    setState(() {
+      _chatMessages.add(_ChatMessage(text: userText, isUser: true));
+      _isAiLoading = true;
+    });
+    _chatInputController.clear();
+    _scrollChatToBottom();
+
+    try {
+      final model = FirebaseAI.googleAI().generativeModel(
+        model: 'gemini-2.5-flash-lite',
+        systemInstruction: Content.system(_buildSoilContext()),
+      );
+
+      final history = _chatMessages
+          .where((m) => !m.isLoading)
+          .take(_chatMessages.length - 1)
+          .map(
+            (m) => m.isUser
+                ? Content.text(m.text)
+                : Content.model([TextPart(m.text)]),
+          )
+          .toList();
+
+      final chat = model.startChat(history: history);
+      final response = await chat.sendMessage(Content.text(userText));
+
+      setState(() {
+        _chatMessages.add(
+          _ChatMessage(
+            text: response.text ?? 'ไม่ได้รับผลจาก AI',
+            isUser: false,
+          ),
+        );
+        _isAiLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _chatMessages.add(
+          _ChatMessage(
+            text: 'เกิดข้อผิดพลาด: $e',
+            isUser: false,
+            isError: true,
+          ),
+        );
+        _isAiLoading = false;
+      });
+    }
+
+    _scrollChatToBottom();
+  }
+
+  Future<void> _analyzeWithAI() async {
+    await _sendChat(
+      'วิเคราะห์สภาพดินโดยรวมและให้คำแนะนำการปรับปรุงดินและการใส่ปุ๋ยที่เหมาะสม '
+      'พร้อมบอกผลกระทบต่อพืชและข้อควรระวัง ความยาวไม่เกิน 200 คำ',
+    );
+  }
+
+  void _scrollChatToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_chatScrollController.hasClients) {
+        _chatScrollController.animateTo(
+          _chatScrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
   Future<void> _runAnalysis() async {
     setState(() => _isLoading = true);
-
     try {
       final snapshot = await FirebaseFirestore.instance
           .collection('gardens')
@@ -90,45 +318,50 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
       List<_PointData> pts = [];
       for (var doc in snapshot.docs) {
         final d = doc.data();
-        pts.add(_PointData(
-          id: doc.id,
-          lat: (d['latitude'] as num?)?.toDouble() ?? 0,
-          lng: (d['longitude'] as num?)?.toDouble() ?? 0,
-          n: (d['n_value'] as num?)?.toInt() ?? 0,
-          p: (d['p_value'] as num?)?.toInt() ?? 0,
-          k: (d['k_value'] as num?)?.toInt() ?? 0,
-          moisture: (d['moisture'] as num?)?.toInt() ?? 0,
-          timestamp: d['timestamp'] as Timestamp?,
-          source: d['source'] as String? ?? '-',
-        ));
+        pts.add(
+          _PointData(
+            id: doc.id,
+            lat: (d['latitude'] as num?)?.toDouble() ?? 0,
+            lng: (d['longitude'] as num?)?.toDouble() ?? 0,
+            n: (d['n_value'] as num?)?.toInt() ?? 0,
+            p: (d['p_value'] as num?)?.toInt() ?? 0,
+            k: (d['k_value'] as num?)?.toInt() ?? 0,
+            moisture: (d['moisture'] as num?)?.toInt() ?? 0,
+            timestamp: d['timestamp'] as Timestamp?,
+            source: d['source'] as String? ?? '-',
+          ),
+        );
       }
 
       setState(() {
         _points = pts;
         _isLoading = false;
         _hasAnalyzed = true;
+        _inputExpanded = false;
+        _chatMessages = [];
       });
 
+      // ✅ รอ FlutterMap render ก่อนค่อย move
       if (pts.isNotEmpty) {
-        _mapController.move(
-          LatLng(pts.first.lat, pts.first.lng),
-          16.0,
-        );
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          try {
+            _mapController.move(LatLng(pts.first.lat, pts.first.lng), 16.0);
+          } catch (_) {}
+        });
       }
     } catch (e) {
       setState(() => _isLoading = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("เกิดข้อผิดพลาด: $e"),
-              backgroundColor: Colors.red),
+          SnackBar(
+            content: Text("เกิดข้อผิดพลาด: $e"),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
   }
 
-  // ─────────────────────────────────────────────
-  // สรุปผล
-  // ─────────────────────────────────────────────
   Map<_PointStatus, int> get _summary {
     Map<_PointStatus, int> map = {
       _PointStatus.good: 0,
@@ -142,9 +375,6 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
     return map;
   }
 
-  // ─────────────────────────────────────────────
-  // Helpers
-  // ─────────────────────────────────────────────
   Color _statusColor(_PointStatus s) {
     switch (s) {
       case _PointStatus.good:
@@ -189,9 +419,6 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
     return DateFormat('dd/MM/yyyy HH:mm').format(ts.toDate());
   }
 
-  // ─────────────────────────────────────────────
-  // Build
-  // ─────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final summary = _summary;
@@ -205,28 +432,33 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
       ),
       body: Column(
         children: [
-          // ─── ส่วนกรอกค่าที่คาดหวัง ───
-          _buildExpectedInput(),
-
-          // ─── แผนที่ ───
+          _buildCollapsibleInput(),
           if (_hasAnalyzed) ...[
             SizedBox(
-              height: MediaQuery.of(context).size.height * 0.32,
+              height: MediaQuery.of(context).size.height * 0.30,
               child: _buildMap(),
             ),
-            // ─── สรุปผล ───
             _buildSummaryBar(summary),
           ],
-
-          // ─── รายการจุด ───
           if (_hasAnalyzed && _points.isNotEmpty)
-            Expanded(child: _buildPointList()),
-
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.only(bottom: 20),
+                children: [
+                  _buildAvgCard(),
+                  _buildFertilizerSection(),
+                  _buildAISection(),
+                  _buildPointList(),
+                ],
+              ),
+            ),
           if (_hasAnalyzed && _points.isEmpty)
             const Expanded(
               child: Center(
-                child: Text("ไม่มีข้อมูลจุดตรวจในรอบนี้",
-                    style: TextStyle(fontSize: 16, color: Colors.grey)),
+                child: Text(
+                  "ไม่มีข้อมูลจุดตรวจในรอบนี้",
+                  style: TextStyle(fontSize: 16, color: Colors.grey),
+                ),
               ),
             ),
         ],
@@ -234,34 +466,95 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
     );
   }
 
-  // ─── กรอกค่าที่คาดหวัง ───
-  Widget _buildExpectedInput() {
+  Widget _buildCollapsibleInput() {
     return Container(
       color: Colors.teal,
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () => setState(() => _inputExpanded = !_inputExpanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  const Icon(Icons.tune, color: Colors.white70, size: 18),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      "ค่า NPK ที่คาดหวัง & การวิเคราะห์",
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    _inputExpanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    color: Colors.white70,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          AnimatedCrossFade(
+            firstChild: _buildInputContent(),
+            secondChild: const SizedBox.shrink(),
+            crossFadeState: _inputExpanded
+                ? CrossFadeState.showFirst
+                : CrossFadeState.showSecond,
+            duration: const Duration(milliseconds: 250),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInputContent() {
+    return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("ค่า NPK ที่คาดหวัง (mg/kg)",
-              style: TextStyle(
-                  color: Colors.white70,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500)),
+          const Text(
+            "ค่า NPK ที่คาดหวัง (mg/kg)",
+            style: TextStyle(
+              color: Colors.white70,
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
           const SizedBox(height: 8),
           Row(
             children: [
-              _buildNPKField("N (ไนโตรเจน)", _expectedNController, Colors.blue[200]!),
+              _buildNPKField(
+                "N (ไนโตรเจน)",
+                _expectedNController,
+                Colors.blue[200]!,
+              ),
               const SizedBox(width: 8),
-              _buildNPKField("P (ฟอสฟอรัส)", _expectedPController, Colors.green[200]!),
+              _buildNPKField(
+                "P (ฟอสฟอรัส)",
+                _expectedPController,
+                Colors.green[200]!,
+              ),
               const SizedBox(width: 8),
-              _buildNPKField("K (โพแทสเซียม)", _expectedKController, Colors.orange[200]!),
+              _buildNPKField(
+                "K (โพแทสเซียม)",
+                _expectedKController,
+                Colors.orange[200]!,
+              ),
             ],
           ),
           const SizedBox(height: 10),
           Row(
             children: [
-              const Text("ช่วงยอมรับ ±",
-                  style: TextStyle(color: Colors.white70, fontSize: 13)),
+              const Text(
+                "ช่วงยอมรับ ±",
+                style: TextStyle(color: Colors.white70, fontSize: 13),
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: SliderTheme(
@@ -280,11 +573,14 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
                   ),
                 ),
               ),
-              Text("${_tolerance.toInt()}%",
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15)),
+              Text(
+                "${_tolerance.toInt()}%",
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -297,7 +593,10 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
                       width: 18,
                       height: 18,
                       child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.teal))
+                        strokeWidth: 2,
+                        color: Colors.teal,
+                      ),
+                    )
                   : const Icon(Icons.analytics),
               label: Text(_isLoading ? "กำลังวิเคราะห์..." : "วิเคราะห์ผลดิน"),
               style: ElevatedButton.styleFrom(
@@ -305,7 +604,9 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
                 foregroundColor: Colors.teal[800],
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 textStyle: const TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.bold),
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ),
@@ -315,67 +616,723 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
   }
 
   Widget _buildNPKField(
-      String label, TextEditingController ctrl, Color fillColor) {
+    String label,
+    TextEditingController ctrl,
+    Color fillColor,
+  ) {
     return Expanded(
       child: TextField(
         controller: ctrl,
         keyboardType: TextInputType.number,
         textAlign: TextAlign.center,
-        style: const TextStyle(
-            fontWeight: FontWeight.bold, fontSize: 16),
+        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
         decoration: InputDecoration(
           labelText: label,
           labelStyle: const TextStyle(fontSize: 11),
           filled: true,
           fillColor: fillColor,
           border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide.none),
-          contentPadding:
-              const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide.none,
+          ),
+          contentPadding: const EdgeInsets.symmetric(
+            vertical: 10,
+            horizontal: 8,
+          ),
         ),
       ),
     );
   }
 
-  // ─── แผนที่ ───
-  Widget _buildMap() {
-    List<Marker> markers = [];
-
-    for (int i = 0; i < _points.length; i++) {
-      final p = _points[i];
-      final status = _evaluatePoint(p);
-      final color = _statusColor(status);
-
-      markers.add(Marker(
-        point: LatLng(p.lat, p.lng),
-        width: 56,
-        height: 56,
-        child: GestureDetector(
-          onTap: () => _showPointDetail(p, status),
-          child: Stack(
-            alignment: Alignment.center,
+  Widget _buildAvgCard() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 10, 10, 4),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: color.withOpacity(0.25),
-                  border: Border.all(color: color, width: 3),
+              const Icon(Icons.bar_chart, color: Colors.teal, size: 20),
+              const SizedBox(width: 6),
+              const Expanded(
+                child: Text(
+                  "ค่าเฉลี่ยทั้งแปลง",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                    color: Colors.teal,
+                  ),
+                ),
+              ),
+              // ✅ ปุ่ม 3 จุด
+              Builder(
+                builder: (btnCtx) => IconButton(
+                  icon: const Icon(
+                    Icons.more_vert,
+                    color: Colors.teal,
+                    size: 22,
+                  ),
+                  tooltip: "แสดงกราฟ",
+                  onPressed: () => showChartMenu(
+                    context: btnCtx,
+                    points: _points
+                        .asMap()
+                        .entries
+                        .map(
+                          (e) => ChartPointData(
+                            index: e.key,
+                            n: e.value.n,
+                            p: e.value.p,
+                            k: e.value.k,
+                            moisture: e.value.moisture,
+                            timestamp: e.value.timestamp?.toDate(),
+                          ),
+                        )
+                        .toList(),
+                    expectedN: _expectedN,
+                    expectedP: _expectedP,
+                    expectedK: _expectedK,
+                    tolerance: _tolerance,
+                    fertilizerAdvices: _getFertilizerAdvices()
+                        .map((a) => "${a.nutrient}: ${a.dosageHint}")
+                        .toList(),
+                    avgN: _avgN,
+                    avgP: _avgP,
+                    avgK: _avgK,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _buildAvgBox("N", _avgN, _expectedN.toDouble(), Colors.blue),
+              _buildAvgBox(
+                "P",
+                _avgP,
+                _expectedP.toDouble(),
+                Colors.green[700]!,
+              ),
+              _buildAvgBox(
+                "K",
+                _avgK,
+                _expectedK.toDouble(),
+                Colors.orange[800]!,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAvgBox(String label, double avg, double expected, Color color) {
+    double ratio = expected > 0 ? avg / expected : 1.0;
+    double tLow = 1.0 - (_tolerance / 100);
+    double tHigh = 1.0 + (_tolerance / 100);
+    bool inRange = ratio >= tLow && ratio <= tHigh;
+    Color statusColor = expected == 0
+        ? Colors.grey
+        : inRange
+        ? Colors.green
+        : (ratio < tLow ? Colors.red : Colors.orange);
+
+    return Column(
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            color: color,
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: color.withOpacity(0.4)),
+          ),
+          child: Column(
+            children: [
+              Text(
+                avg.toStringAsFixed(1),
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: color,
                 ),
               ),
               Text(
-                "${i + 1}",
-                style: TextStyle(
-                    color: color,
+                "mg/kg",
+                style: TextStyle(fontSize: 10, color: Colors.grey[500]),
+              ),
+              const SizedBox(height: 2),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: statusColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  expected == 0
+                      ? "-"
+                      : inRange
+                      ? "✓ ปกติ"
+                      : ratio < tLow
+                      ? "▼ ต่ำ"
+                      : "▲ สูง",
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: statusColor,
                     fontWeight: FontWeight.bold,
-                    fontSize: 14),
+                  ),
+                ),
               ),
             ],
           ),
         ),
-      ));
+      ],
+    );
+  }
+
+  Widget _buildFertilizerSection() {
+    final advices = _getFertilizerAdvices();
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 4, 10, 4),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.grass, color: Colors.green, size: 20),
+              SizedBox(width: 6),
+              Text(
+                "คำแนะนำปุ๋ยสำหรับแปลงนี้",
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                  color: Colors.green,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            "คำนวณจากค่าเฉลี่ย ${_points.length} จุดตรวจ เทียบกับค่าที่คาดหวัง ±${_tolerance.toInt()}%",
+            style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+          ),
+          const SizedBox(height: 10),
+          if (advices.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.green[50],
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.green[200]!),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.check_circle, color: Colors.green, size: 22),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      "ค่าดิน N P K อยู่ในเกณฑ์ปกติทั้งหมด\nไม่จำเป็นต้องปรับปรุงในรอบนี้",
+                      style: TextStyle(
+                        color: Colors.green,
+                        fontWeight: FontWeight.w500,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else
+            ...advices.map((a) => _buildAdviceCard(a)),
+          const SizedBox(height: 6),
+          Text(
+            "* ปริมาณปุ๋ยเป็นค่าประมาณเบื้องต้น ควรปรึกษานักวิชาการเกษตรก่อนใช้จริง",
+            style: TextStyle(fontSize: 10, color: Colors.grey[400]),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAdviceCard(_FertilizerAdvice a) {
+    final bool isLow = a.status == _NutrientStatus.low;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: a.color.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: a.color.withOpacity(0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ✅ แก้ overflow
+          Row(
+            children: [
+              Icon(
+                isLow ? Icons.arrow_downward : Icons.arrow_upward,
+                color: a.color,
+                size: 16,
+              ),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  a.nutrient,
+                  style: TextStyle(
+                    color: a.color,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
+              Flexible(
+                child: Text(
+                  "เฉลี่ย ${a.avgValue.toStringAsFixed(1)} / คาดหวัง ${a.expectedValue.toStringAsFixed(0)} mg/kg",
+                  style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                  textAlign: TextAlign.right,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (isLow) ...[
+            Wrap(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: a.color.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    a.fertilizerName,
+                    style: TextStyle(
+                      color: a.color,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              a.fertilizerDetail,
+              style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+            ),
+            const SizedBox(height: 4),
+          ],
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.grey[50],
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline, size: 14, color: Colors.grey[500]),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    a.dosageHint,
+                    style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAISection() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 4, 10, 4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.auto_awesome,
+                  color: Colors.deepPurple,
+                  size: 20,
+                ),
+                const SizedBox(width: 6),
+                const Expanded(
+                  child: Text(
+                    "ถามนักวิชาการเกษตร AI",
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                      color: Colors.deepPurple,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.deepPurple.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Text(
+                    "Gemini",
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: Colors.deepPurple,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _isAiLoading ? null : _analyzeWithAI,
+                icon: _isAiLoading
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.deepPurple,
+                        ),
+                      )
+                    : const Icon(Icons.auto_awesome, size: 16),
+                label: Text(
+                  _isAiLoading
+                      ? "AI กำลังวิเคราะห์..."
+                      : "วิเคราะห์ภาพรวมดินอัตโนมัติ",
+                ),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.deepPurple,
+                  side: const BorderSide(color: Colors.deepPurple),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                ),
+              ),
+            ),
+          ),
+          if (_chatMessages.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Container(
+              height: 280,
+              margin: const EdgeInsets.symmetric(horizontal: 14),
+              decoration: BoxDecoration(
+                color: Colors.grey[50],
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.grey[200]!),
+              ),
+              child: ListView.builder(
+                controller: _chatScrollController,
+                padding: const EdgeInsets.all(10),
+                itemCount: _chatMessages.length + (_isAiLoading ? 1 : 0),
+                itemBuilder: (ctx, i) {
+                  if (i == _chatMessages.length && _isAiLoading) {
+                    return _buildTypingIndicator();
+                  }
+                  return _buildChatBubble(_chatMessages[i]);
+                },
+              ),
+            ),
+          ],
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _chatInputController,
+                    enabled: !_isAiLoading,
+                    maxLines: null,
+                    keyboardType: TextInputType.multiline,
+                    textInputAction: TextInputAction.newline,
+                    decoration: InputDecoration(
+                      hintText: "ถามเกี่ยวกับดิน เช่น ควรปลูกพืชอะไร?",
+                      hintStyle: TextStyle(
+                        fontSize: 13,
+                        color: Colors.grey[400],
+                      ),
+                      filled: true,
+                      fillColor: Colors.grey[100],
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    onSubmitted: (v) => _sendChat(v),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                InkWell(
+                  onTap: _isAiLoading
+                      ? null
+                      : () => _sendChat(_chatInputController.text),
+                  borderRadius: BorderRadius.circular(24),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: _isAiLoading
+                          ? Colors.grey[300]
+                          : Colors.deepPurple,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.send,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+            child: Text(
+              "* AI รับรู้ข้อมูลดินของแปลงนี้อัตโนมัติ — ถามได้เลยโดยไม่ต้องระบุค่าซ้ำ",
+              style: TextStyle(fontSize: 10, color: Colors.grey[400]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChatBubble(_ChatMessage msg) {
+    final bool isUser = msg.isUser;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: isUser
+            ? MainAxisAlignment.end
+            : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!isUser) ...[
+            CircleAvatar(
+              radius: 14,
+              backgroundColor: Colors.deepPurple[100],
+              child: const Icon(
+                Icons.auto_awesome,
+                size: 14,
+                color: Colors.deepPurple,
+              ),
+            ),
+            const SizedBox(width: 6),
+          ],
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: isUser
+                    ? Colors.deepPurple
+                    : msg.isError
+                    ? Colors.red[50]
+                    : Colors.white,
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(14),
+                  topRight: const Radius.circular(14),
+                  bottomLeft: Radius.circular(isUser ? 14 : 4),
+                  bottomRight: Radius.circular(isUser ? 4 : 14),
+                ),
+                border: isUser
+                    ? null
+                    : Border.all(
+                        color: msg.isError
+                            ? Colors.red[200]!
+                            : Colors.grey[200]!,
+                      ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.04),
+                    blurRadius: 4,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
+              ),
+              child: Text(
+                msg.text,
+                style: TextStyle(
+                  fontSize: 13,
+                  height: 1.5,
+                  color: isUser
+                      ? Colors.white
+                      : msg.isError
+                      ? Colors.red[700]
+                      : Colors.black87,
+                ),
+              ),
+            ),
+          ),
+          if (isUser) const SizedBox(width: 6),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTypingIndicator() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 14,
+            backgroundColor: Colors.deepPurple[100],
+            child: const Icon(
+              Icons.auto_awesome,
+              size: 14,
+              color: Colors.deepPurple,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.grey[200]!),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildDot(0),
+                const SizedBox(width: 4),
+                _buildDot(1),
+                const SizedBox(width: 4),
+                _buildDot(2),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDot(int index) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.4, end: 1.0),
+      duration: Duration(milliseconds: 400 + index * 150),
+      builder: (_, v, __) => Opacity(
+        opacity: v,
+        child: Container(
+          width: 7,
+          height: 7,
+          decoration: const BoxDecoration(
+            color: Colors.deepPurple,
+            shape: BoxShape.circle,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMap() {
+    List<Marker> markers = [];
+    for (int i = 0; i < _points.length; i++) {
+      final p = _points[i];
+      final status = _evaluatePoint(p);
+      final color = _statusColor(status);
+      markers.add(
+        Marker(
+          point: LatLng(p.lat, p.lng),
+          width: 56,
+          height: 56,
+          child: GestureDetector(
+            onTap: () => _showPointDetail(p, status),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: color.withOpacity(0.25),
+                    border: Border.all(color: color, width: 3),
+                  ),
+                ),
+                Text(
+                  "${i + 1}",
+                  style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
     }
 
     LatLng center = _points.isNotEmpty
@@ -384,10 +1341,7 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
 
     return FlutterMap(
       mapController: _mapController,
-      options: MapOptions(
-        initialCenter: center,
-        initialZoom: 16.0,
-      ),
+      options: MapOptions(initialCenter: center, initialZoom: 16.0),
       children: [
         TileLayer(
           urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -398,7 +1352,6 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
     );
   }
 
-  // ─── แถบสรุป ───
   Widget _buildSummaryBar(Map<_PointStatus, int> summary) {
     return Container(
       color: Colors.white,
@@ -406,17 +1359,20 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
+          _buildSummaryChip(_PointStatus.good, summary[_PointStatus.good] ?? 0),
           _buildSummaryChip(
-              _PointStatus.good, summary[_PointStatus.good] ?? 0),
-          _buildSummaryChip(
-              _PointStatus.warning, summary[_PointStatus.warning] ?? 0),
-          _buildSummaryChip(
-              _PointStatus.bad, summary[_PointStatus.bad] ?? 0),
-          Text("รวม ${_points.length} จุด",
-              style: const TextStyle(
-                  color: Colors.grey,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500)),
+            _PointStatus.warning,
+            summary[_PointStatus.warning] ?? 0,
+          ),
+          _buildSummaryChip(_PointStatus.bad, summary[_PointStatus.bad] ?? 0),
+          Text(
+            "รวม ${_points.length} จุด",
+            style: const TextStyle(
+              color: Colors.grey,
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
         ],
       ),
     );
@@ -427,25 +1383,28 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
       children: [
         Icon(_statusIcon(status), color: _statusColor(status), size: 18),
         const SizedBox(width: 4),
-        Text("$count จุด",
-            style: TextStyle(
-                color: _statusColor(status),
-                fontWeight: FontWeight.bold,
-                fontSize: 13)),
+        Text(
+          "$count จุด",
+          style: TextStyle(
+            color: _statusColor(status),
+            fontWeight: FontWeight.bold,
+            fontSize: 13,
+          ),
+        ),
       ],
     );
   }
 
-  // ─── รายการจุด ───
   Widget _buildPointList() {
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(10, 6, 10, 20),
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
       itemCount: _points.length,
       itemBuilder: (ctx, i) {
         final p = _points[i];
         final status = _evaluatePoint(p);
         final color = _statusColor(status);
-
         return Card(
           margin: const EdgeInsets.symmetric(vertical: 4),
           shape: RoundedRectangleBorder(
@@ -455,21 +1414,24 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
           child: ListTile(
             leading: CircleAvatar(
               backgroundColor: color.withOpacity(0.15),
-              child: Text("${i + 1}",
-                  style: TextStyle(
-                      color: color, fontWeight: FontWeight.bold)),
+              child: Text(
+                "${i + 1}",
+                style: TextStyle(color: color, fontWeight: FontWeight.bold),
+              ),
             ),
             title: Row(
               children: [
                 Icon(_statusIcon(status), color: color, size: 16),
                 const SizedBox(width: 4),
-                Text(_statusLabel(status),
-                    style: TextStyle(
-                        color: color, fontWeight: FontWeight.bold)),
+                Text(
+                  _statusLabel(status),
+                  style: TextStyle(color: color, fontWeight: FontWeight.bold),
+                ),
                 const Spacer(),
-                Text(_formatDateTime(p.timestamp),
-                    style: const TextStyle(
-                        fontSize: 11, color: Colors.grey)),
+                Text(
+                  _formatDateTime(p.timestamp),
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                ),
               ],
             ),
             subtitle: Padding(
@@ -482,11 +1444,11 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
                   const SizedBox(width: 8),
                   _buildMiniNPK("K", p.k, _expectedK, Colors.orange[800]!),
                   const Spacer(),
-                  Icon(Icons.water_drop,
-                      size: 13, color: Colors.blue[300]),
-                  Text(" ${p.moisture}%",
-                      style: TextStyle(
-                          fontSize: 12, color: Colors.blue[400])),
+                  Icon(Icons.water_drop, size: 13, color: Colors.blue[300]),
+                  Text(
+                    " ${p.moisture}%",
+                    style: TextStyle(fontSize: 12, color: Colors.blue[400]),
+                  ),
                 ],
               ),
             ),
@@ -499,40 +1461,44 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
 
   Widget _buildMiniNPK(String label, int value, int expected, Color color) {
     String diff = expected > 0
-        ? (value >= expected
-            ? "+${value - expected}"
-            : "${value - expected}")
+        ? (value >= expected ? "+${value - expected}" : "${value - expected}")
         : "";
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label,
-            style: TextStyle(
-                fontSize: 10,
-                color: color,
-                fontWeight: FontWeight.bold)),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            color: color,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
         Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Text("$value",
-                style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
-                    color: color)),
+            Text(
+              "$value",
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+                color: color,
+              ),
+            ),
             if (diff.isNotEmpty)
-              Text(" ($diff)",
-                  style: TextStyle(
-                      fontSize: 10,
-                      color: diff.startsWith('+')
-                          ? Colors.green
-                          : Colors.red)),
+              Text(
+                " ($diff)",
+                style: TextStyle(
+                  fontSize: 10,
+                  color: diff.startsWith('+') ? Colors.green : Colors.red,
+                ),
+              ),
           ],
         ),
       ],
     );
   }
 
-  // ─── popup รายละเอียดจุด ───
   void _showPointDetail(_PointData p, _PointStatus status) {
     final color = _statusColor(status);
     showModalBottomSheet(
@@ -551,45 +1517,50 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
                 children: [
                   Icon(_statusIcon(status), color: color, size: 26),
                   const SizedBox(width: 10),
-                  Text("สถานะ: ${_statusLabel(status)}",
+                  Flexible(
+                    child: Text(
+                      "สถานะ: ${_statusLabel(status)}",
                       style: TextStyle(
-                          color: color,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold)),
+                        color: color,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
                 ],
               ),
               const SizedBox(height: 4),
-              Text(_formatDateTime(p.timestamp),
-                  style:
-                      const TextStyle(fontSize: 13, color: Colors.grey)),
+              Text(
+                _formatDateTime(p.timestamp),
+                style: const TextStyle(fontSize: 13, color: Colors.grey),
+              ),
               const Divider(height: 20),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
                   _buildDetailBox("N", p.n, _expectedN, Colors.blue),
-                  _buildDetailBox("P", p.p, _expectedP,
-                      Colors.green[700]!),
-                  _buildDetailBox(
-                      "K", p.k, _expectedK, Colors.orange[800]!),
+                  _buildDetailBox("P", p.p, _expectedP, Colors.green[700]!),
+                  _buildDetailBox("K", p.k, _expectedK, Colors.orange[800]!),
                 ],
               ),
               const SizedBox(height: 16),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(Icons.water_drop,
-                      color: Colors.blue, size: 20),
+                  const Icon(Icons.water_drop, color: Colors.blue, size: 20),
                   const SizedBox(width: 6),
-                  Text("ความชื้น: ${p.moisture}%",
-                      style: const TextStyle(fontSize: 16)),
+                  Text(
+                    "ความชื้น: ${p.moisture}%",
+                    style: const TextStyle(fontSize: 16),
+                  ),
                 ],
               ),
               const SizedBox(height: 8),
               Center(
                 child: Text(
-                    "พิกัด: ${p.lat.toStringAsFixed(6)}, ${p.lng.toStringAsFixed(6)}",
-                    style: const TextStyle(
-                        fontSize: 11, color: Colors.grey)),
+                  "พิกัด: ${p.lat.toStringAsFixed(6)}, ${p.lng.toStringAsFixed(6)}",
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                ),
               ),
               const SizedBox(height: 8),
             ],
@@ -599,23 +1570,24 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
     );
   }
 
-  Widget _buildDetailBox(
-      String label, int value, int expected, Color color) {
+  Widget _buildDetailBox(String label, int value, int expected, Color color) {
     double ratio = expected > 0 ? value / expected : 1.0;
-    String ratioStr =
-        expected > 0 ? "${(ratio * 100).toStringAsFixed(0)}%" : "-";
-
+    String ratioStr = expected > 0
+        ? "${(ratio * 100).toStringAsFixed(0)}%"
+        : "-";
     return Column(
       children: [
-        Text(label,
-            style: TextStyle(
-                color: color,
-                fontWeight: FontWeight.bold,
-                fontSize: 16)),
+        Text(
+          label,
+          style: TextStyle(
+            color: color,
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
+          ),
+        ),
         const SizedBox(height: 4),
         Container(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           decoration: BoxDecoration(
             color: color.withOpacity(0.1),
             borderRadius: BorderRadius.circular(10),
@@ -623,22 +1595,28 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
           ),
           child: Column(
             children: [
-              Text("$value",
-                  style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: color)),
-              Text("คาดหวัง: $expected",
-                  style: const TextStyle(
-                      fontSize: 11, color: Colors.grey)),
-              Text(ratioStr,
-                  style: TextStyle(
-                      fontSize: 12,
-                      color:
-                          ratio >= 0.8 && ratio <= 1.2
-                              ? Colors.green
-                              : Colors.red,
-                      fontWeight: FontWeight.bold)),
+              Text(
+                "$value",
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+              ),
+              Text(
+                "คาดหวัง: $expected",
+                style: const TextStyle(fontSize: 11, color: Colors.grey),
+              ),
+              Text(
+                ratioStr,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: ratio >= 0.8 && ratio <= 1.2
+                      ? Colors.green
+                      : Colors.red,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ],
           ),
         ),
@@ -647,10 +1625,23 @@ class _SoilAnalysisPageState extends State<SoilAnalysisPage> {
   }
 }
 
-// ─────────────────────────────────────────────
-// Models
-// ─────────────────────────────────────────────
 enum _PointStatus { good, warning, bad, neutral }
+
+enum _NutrientStatus { low, high }
+
+class _ChatMessage {
+  final String text;
+  final bool isUser;
+  final bool isError;
+  final bool isLoading;
+
+  _ChatMessage({
+    required this.text,
+    required this.isUser,
+    this.isError = false,
+    this.isLoading = false,
+  });
+}
 
 class _PointData {
   final String id;
@@ -673,5 +1664,27 @@ class _PointData {
     required this.moisture,
     required this.timestamp,
     required this.source,
+  });
+}
+
+class _FertilizerAdvice {
+  final String nutrient;
+  final _NutrientStatus status;
+  final double avgValue;
+  final double expectedValue;
+  final String fertilizerName;
+  final String fertilizerDetail;
+  final String dosageHint;
+  final Color color;
+
+  _FertilizerAdvice({
+    required this.nutrient,
+    required this.status,
+    required this.avgValue,
+    required this.expectedValue,
+    required this.fertilizerName,
+    required this.fertilizerDetail,
+    required this.dosageHint,
+    required this.color,
   });
 }

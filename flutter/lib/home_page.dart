@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart'; // ✅ ใช้สำหรับ kIsWeb และ defaultTargetPlatform
+import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
@@ -12,7 +12,6 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// ✅ ใช้ 2 ไฟล์เดิมสำหรับ Mobile และสลับไปใช้ไฟล์ Web เมื่อเปิดบนเบราว์เซอร์
 import 'ble_service.dart' if (dart.library.html) 'ble_manager_web.dart';
 import 'bluetooth_scan_dialog.dart' if (dart.library.html) 'ble_manager_web.dart';
 
@@ -37,11 +36,11 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final MapController _mapController = MapController();
   LatLng _currentPosition = const LatLng(13.7563, 100.5018);
-  double _currentAltitude = 0;  
+  double _currentAltitude = 0;
   bool _isLoadingLocation = true;
   int? _selectedIndex;
   bool _isDescending = true;
-  
+
   bool _isBlueConnected = false;
   bool _isAutoSaving = false;
   bool _isToggling = false;
@@ -54,8 +53,7 @@ class _HomePageState extends State<HomePage> {
     _checkAndEnableBluetooth();
     _getCurrentLocation();
     _checkBluetoothStatus();
-    
-    // ✅ ฟังก์ชันพวกนี้ให้รันเฉพาะบน Mobile
+
     if (!kIsWeb) {
       _checkAutoSaveStatus();
       _ackSubscription = FlutterBackgroundService()
@@ -76,11 +74,8 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  // ─────────────────────────────────────────────
-  // Bluetooth
-  // ─────────────────────────────────────────────
   Future<void> _checkAndEnableBluetooth() async {
-    if (kIsWeb) return; // ✅ Web จัดการ Bluetooth แบบอื่น ข้ามการขอสิทธิ์นี้ไปเลย
+    if (kIsWeb) return;
 
     await [
       Permission.bluetooth,
@@ -96,7 +91,6 @@ class _HomePageState extends State<HomePage> {
 
     BluetoothAdapterState state = await FlutterBluePlus.adapterState.first;
     if (state == BluetoothAdapterState.off) {
-      // ✅ ใช้ defaultTargetPlatform แทน Platform.isAndroid เพื่อไม่ให้ Web พัง
       if (defaultTargetPlatform == TargetPlatform.android) {
         try {
           await FlutterBluePlus.turnOn();
@@ -117,7 +111,7 @@ class _HomePageState extends State<HomePage> {
           children: [
             Icon(Icons.bluetooth_disabled, color: Colors.red),
             SizedBox(width: 10),
-            Text("บลูทูธปิดอยู่"),
+            Flexible(child: Text("บลูทูธปิดอยู่")), // ✅
           ],
         ),
         content: const Text(
@@ -178,11 +172,8 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // Auto Save
-  // ─────────────────────────────────────────────
   Future<void> _checkAutoSaveStatus() async {
-    if (kIsWeb) return; // ✅ ข้ามการทำงานบน Web
+    if (kIsWeb) return;
     final service = FlutterBackgroundService();
     bool isRunning = await service.isRunning();
     SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -197,8 +188,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _toggleAutoSave() async {
-    if (kIsWeb) return; // ✅ ข้ามการทำงานบน Web
-    
+    if (kIsWeb) return;
+
     if (await Permission.notification.isDenied) {
       final status = await Permission.notification.request();
       if (!status.isGranted) {
@@ -240,7 +231,6 @@ class _HomePageState extends State<HomePage> {
         }
 
         await service.startService();
-
         await Future.delayed(const Duration(milliseconds: 500));
         service.invoke('updateIds', {
           'garden_id': widget.gardenId,
@@ -264,9 +254,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // Location
-  // ─────────────────────────────────────────────
   Future<void> _getCurrentLocation() async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -285,7 +272,7 @@ class _HomePageState extends State<HomePage> {
       if (mounted) {
         setState(() {
           _currentPosition = LatLng(position.latitude, position.longitude);
-          _currentAltitude = position.altitude; 
+          _currentAltitude = position.altitude;
           _isLoadingLocation = false;
         });
         _mapController.move(_currentPosition, 16.0);
@@ -295,9 +282,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // ✅ เปิดหน้าวิเคราะห์
-  // ─────────────────────────────────────────────
   void _openAnalysisPage() {
     Navigator.push(
       context,
@@ -310,9 +294,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // Points
-  // ─────────────────────────────────────────────
   void _showLoadingDialog(BuildContext context) {
     showDialog(
       context: context,
@@ -339,7 +320,7 @@ class _HomePageState extends State<HomePage> {
       int n = 0, p = 0, k = 0, moisture = 0;
       String source = "Manual";
 
-if (_isBlueConnected && BLEService().isConnected) {
+      if (_isBlueConnected && BLEService().isConnected) {
         try {
           var data = await BLEService().readNPK();
           if (data.isNotEmpty) {
@@ -351,11 +332,10 @@ if (_isBlueConnected && BLEService().isConnected) {
           }
         } catch (e) {
           debugPrint("Read error: $e");
-          // ✅ สั่งให้โชว์ SnackBar สีแดงพร้อมข้อความ Error ที่แท้จริง
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text("$e"), // ข้อความจาก Bluefy จะมาโชว์ตรงนี้
+                content: Text("$e"),
                 backgroundColor: Colors.red,
                 duration: const Duration(seconds: 5),
                 action: SnackBarAction(
@@ -367,7 +347,6 @@ if (_isBlueConnected && BLEService().isConnected) {
             );
           }
         }
-        
       }
 
       if (n == 0 && p == 0 && k == 0) {
@@ -382,7 +361,7 @@ if (_isBlueConnected && BLEService().isConnected) {
                 children: [
                   Icon(Icons.warning_amber_rounded, color: Colors.orange),
                   SizedBox(width: 10),
-                  Text("แจ้งเตือนค่าเป็น 0"),
+                  Flexible(child: Text("แจ้งเตือนค่าเป็น 0")), // ✅
                 ],
               ),
               content: const Text(
@@ -397,8 +376,8 @@ if (_isBlueConnected && BLEService().isConnected) {
                 ),
                 ElevatedButton(
                   onPressed: () => Navigator.pop(ctx, true),
-                  style:
-                      ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey),
                   child: const Text("บันทึกค่า 0",
                       style: TextStyle(color: Colors.white)),
                 ),
@@ -484,9 +463,6 @@ if (_isBlueConnected && BLEService().isConnected) {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // UI Helpers
-  // ─────────────────────────────────────────────
   String _formatDateTime(Timestamp? timestamp) {
     if (timestamp == null) return "-";
     return DateFormat('dd/MM/yyyy HH:mm').format(timestamp.toDate());
@@ -506,24 +482,29 @@ if (_isBlueConnected && BLEService().isConnected) {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text("ข้อมูลจุดตรวจ",
-                          style: TextStyle(
-                              fontSize: 18, fontWeight: FontWeight.bold)),
-                      Text(_formatDateTime(data['timestamp']),
-                          style: const TextStyle(
-                              fontSize: 14, color: Colors.grey)),
-                      if (data['source'] != null)
-                        Text("ที่มา: ${data['source']}",
+                  Expanded( // ✅
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text("ข้อมูลจุดตรวจ",
                             style: TextStyle(
-                                fontSize: 12, color: Colors.grey[600])),
-                    ],
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold)),
+                        Text(_formatDateTime(data['timestamp']),
+                            style: const TextStyle(
+                                fontSize: 14, color: Colors.grey)),
+                        if (data['source'] != null)
+                          Text("ที่มา: ${data['source']}",
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[600])),
+                      ],
+                    ),
                   ),
                   if (isOwner)
                     IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
+                        icon:
+                            const Icon(Icons.delete, color: Colors.red),
                         onPressed: () {
                           Navigator.pop(context);
                           _deletePoint(docId);
@@ -535,9 +516,15 @@ if (_isBlueConnected && BLEService().isConnected) {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _buildValueBox("N", "${data['n_value']}", Colors.blue),
-                  _buildValueBox("P", "${data['p_value']}", Colors.green),
-                  _buildValueBox("K", "${data['k_value']}", Colors.orange),
+                  Flexible( // ✅
+                    child: _buildValueBox(
+                        "N", "${data['n_value']}", Colors.blue)),
+                  Flexible( // ✅
+                    child: _buildValueBox(
+                        "P", "${data['p_value']}", Colors.green)),
+                  Flexible( // ✅
+                    child: _buildValueBox(
+                        "K", "${data['k_value']}", Colors.orange)),
                 ],
               ),
               const SizedBox(height: 20),
@@ -563,16 +550,20 @@ if (_isBlueConnected && BLEService().isConnected) {
       children: [
         Text(label,
             style: TextStyle(
-                color: color, fontWeight: FontWeight.bold, fontSize: 18)),
+                color: color,
+                fontWeight: FontWeight.bold,
+                fontSize: 18)),
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           decoration: BoxDecoration(
               color: color.withOpacity(0.1),
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: color)),
           child: Text(value,
               style: const TextStyle(
-                  fontSize: 20, fontWeight: FontWeight.bold)),
+                  fontSize: 20, fontWeight: FontWeight.bold),
+              overflow: TextOverflow.ellipsis), // ✅
         ),
       ],
     );
@@ -583,9 +574,6 @@ if (_isBlueConnected && BLEService().isConnected) {
     _mapController.move(location, 18.0);
   }
 
-  // ─────────────────────────────────────────────
-  // Build
-  // ─────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     bool isOwner = (widget.userRole == 'owner');
@@ -595,18 +583,17 @@ if (_isBlueConnected && BLEService().isConnected) {
         title: const Text("แผนที่และจุดตรวจ"),
         backgroundColor: Colors.green,
         actions: [
-          // ✅ ปุ่มวิเคราะห์ NPK
           IconButton(
             icon: const Icon(Icons.analytics_outlined),
             tooltip: "วิเคราะห์ค่าดิน NPK",
             onPressed: _openAnalysisPage,
           ),
-          // ✅ ซ่อนปุ่ม Auto Save เมื่อเปิดบน Web
           if (!kIsWeb)
             IconButton(
               icon: Icon(
                 _isAutoSaving ? Icons.cloud_sync : Icons.cloud_off,
-                color: _isAutoSaving ? Colors.yellowAccent : Colors.white,
+                color:
+                    _isAutoSaving ? Colors.yellowAccent : Colors.white,
               ),
               tooltip: _isAutoSaving
                   ? "ปิดบันทึกอัตโนมัติ"
@@ -618,15 +605,16 @@ if (_isBlueConnected && BLEService().isConnected) {
               _isBlueConnected
                   ? Icons.bluetooth_connected
                   : Icons.bluetooth_searching,
-              color: _isBlueConnected ? Colors.blue[100] : Colors.white,
+              color:
+                  _isBlueConnected ? Colors.blue[100] : Colors.white,
             ),
-            tooltip: _isBlueConnected ? "ตัดการเชื่อมต่อ" : "ค้นหาอุปกรณ์",
+            tooltip:
+                _isBlueConnected ? "ตัดการเชื่อมต่อ" : "ค้นหาอุปกรณ์",
             onPressed: () async {
               if (_isBlueConnected) {
                 _confirmDisconnect();
               } else {
                 if (kIsWeb) {
-                  // ✅ สำหรับ Web เรียก UI เบราว์เซอร์เลย
                   await showBluetoothScanDialog(
                     context: context,
                     onConnected: () =>
@@ -635,7 +623,6 @@ if (_isBlueConnected && BLEService().isConnected) {
                         setState(() => _isBlueConnected = false),
                   );
                 } else {
-                  // ✅ สำหรับ Mobile เช็คสถานะก่อน
                   BluetoothAdapterState state =
                       await FlutterBluePlus.adapterState.first;
                   if (state == BluetoothAdapterState.off) {
@@ -661,9 +648,11 @@ if (_isBlueConnected && BLEService().isConnected) {
             }),
             itemBuilder: (context) => [
               const PopupMenuItem(
-                  value: true, child: Text('เรียง: ล่าสุด -> เก่าสุด')),
+                  value: true,
+                  child: Text('เรียง: ล่าสุด -> เก่าสุด')),
               const PopupMenuItem(
-                  value: false, child: Text('เรียง: เก่าสุด -> ล่าสุด')),
+                  value: false,
+                  child: Text('เรียง: เก่าสุด -> ล่าสุด')),
             ],
           ),
         ],
@@ -679,9 +668,11 @@ if (_isBlueConnected && BLEService().isConnected) {
             .snapshots(),
         builder: (context, snapshot) {
           if (snapshot.hasError)
-            return Center(child: Text("Error: ${snapshot.error}"));
+            return Center(
+                child: Text("Error: ${snapshot.error}"));
           if (!snapshot.hasData)
-            return const Center(child: CircularProgressIndicator());
+            return const Center(
+                child: CircularProgressIndicator());
 
           var docs = snapshot.data!.docs;
           List<Marker> mapMarkers = [];
@@ -730,8 +721,12 @@ if (_isBlueConnected && BLEService().isConnected) {
                     children: [
                       Icon(Icons.sync, size: 16),
                       SizedBox(width: 8),
-                      Text("กำลังบันทึกพิกัดอัตโนมัติเบื้องหลัง...",
-                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      Flexible( // ✅
+                        child: Text(
+                            "กำลังบันทึกพิกัดอัตโนมัติเบื้องหลัง...",
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold)),
+                      ),
                     ],
                   ),
                 ),
@@ -748,7 +743,8 @@ if (_isBlueConnected && BLEService().isConnected) {
                     TileLayer(
                         urlTemplate:
                             'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                        userAgentPackageName: 'com.example.soil_app'),
+                        userAgentPackageName:
+                            'com.example.soil_app'),
                     MarkerLayer(markers: mapMarkers),
                   ],
                 ),
@@ -759,12 +755,14 @@ if (_isBlueConnected && BLEService().isConnected) {
                 color: Colors.green[50],
                 width: double.infinity,
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text("รายการตรวจ (${docs.length} จุด)",
-                        style: const TextStyle(
-                            fontWeight: FontWeight.bold, fontSize: 16)),
-                    // ✅ ปุ่มวิเคราะห์ในแถบรายการ
+                    Flexible( // ✅
+                      child: Text(
+                          "รายการตรวจ (${docs.length} จุด)",
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16)),
+                    ),
                     TextButton.icon(
                       onPressed: _openAnalysisPage,
                       icon: const Icon(Icons.analytics,
@@ -787,17 +785,20 @@ if (_isBlueConnected && BLEService().isConnected) {
                   padding: const EdgeInsets.only(bottom: 100),
                   itemCount: docs.length,
                   itemBuilder: (context, index) {
-                    var data = docs[index].data() as Map<String, dynamic>;
+                    var data =
+                        docs[index].data() as Map<String, dynamic>;
                     bool isSelected = (index == _selectedIndex);
                     return Card(
-                      color:
-                          isSelected ? Colors.green[100] : Colors.white,
+                      color: isSelected
+                          ? Colors.green[100]
+                          : Colors.white,
                       margin: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 5),
                       child: ListTile(
                         leading: CircleAvatar(
-                            backgroundColor:
-                                isSelected ? Colors.blue : Colors.green,
+                            backgroundColor: isSelected
+                                ? Colors.blue
+                                : Colors.green,
                             child: Text("${index + 1}",
                                 style: const TextStyle(
                                     color: Colors.white))),
@@ -815,8 +816,10 @@ if (_isBlueConnected && BLEService().isConnected) {
                                 onPressed: () =>
                                     _deletePoint(docs[index].id))
                             : null,
-                        onTap: () => _selectPoint(index,
-                            LatLng(data['latitude'], data['longitude'])),
+                        onTap: () => _selectPoint(
+                            index,
+                            LatLng(data['latitude'],
+                                data['longitude'])),
                       ),
                     );
                   },
@@ -830,7 +833,6 @@ if (_isBlueConnected && BLEService().isConnected) {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          // ✅ FAB วิเคราะห์ (เล็ก)
           FloatingActionButton.small(
             heroTag: "fab_analysis",
             onPressed: _openAnalysisPage,
@@ -839,11 +841,11 @@ if (_isBlueConnected && BLEService().isConnected) {
             child: const Icon(Icons.analytics, color: Colors.white),
           ),
           const SizedBox(height: 10),
-          // FAB บันทึก (ใหญ่)
           FloatingActionButton.extended(
             heroTag: "fab_save",
             onPressed: _addNewPoint,
-            label: Text(_isBlueConnected ? "อ่านค่า & บันทึก" : "บันทึก"),
+            label: Text(
+                _isBlueConnected ? "อ่านค่า & บันทึก" : "บันทึก"),
             icon: Icon(_isBlueConnected
                 ? Icons.bluetooth_audio
                 : Icons.add_location_alt),
@@ -856,9 +858,6 @@ if (_isBlueConnected && BLEService().isConnected) {
   }
 }
 
-// ─────────────────────────────────────────────
-// Bouncing Pin Animation
-// ─────────────────────────────────────────────
 class BouncingPin extends StatefulWidget {
   const BouncingPin({super.key});
   @override
@@ -877,7 +876,8 @@ class _BouncingPinState extends State<BouncingPin>
         duration: const Duration(milliseconds: 1000), vsync: this)
       ..repeat(reverse: true);
     _animation = Tween<double>(begin: 0, end: -15).animate(
-        CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+        CurvedAnimation(
+            parent: _controller, curve: Curves.easeInOut));
   }
 
   @override
@@ -892,6 +892,7 @@ class _BouncingPinState extends State<BouncingPin>
         animation: _animation,
         builder: (context, child) => Transform.translate(
             offset: Offset(0, _animation.value), child: child),
-        child: const Icon(Icons.location_on, color: Colors.blue, size: 50));
+        child: const Icon(Icons.location_on,
+            color: Colors.blue, size: 50));
   }
 }

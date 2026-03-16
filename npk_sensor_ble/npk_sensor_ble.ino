@@ -1,145 +1,378 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 #include <BLEDevice.h>
-#include <BLEServer.h>
 #include <BLEUtils.h>
+#include <BLEServer.h>
 #include <BLE2902.h>
 
-// --- ตั้งค่า UUID (ต้องตรงกับในไฟล์ Flutter ble_service.dart เป๊ะๆ) ---
+// ==========================================
+// BLE UUID (ต้องตรงกับ Flutter)
+// ==========================================
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define ACK_UUID            "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 
-BLEServer* pServer = NULL;
-BLECharacteristic* pCharacteristic = NULL;
+// ==========================================
+// PIN
+// ==========================================
+#define RE            4
+#define RXD2          17
+#define TXD2          16
+#define ANALOG_IN_PIN 36
+#define SLEEP_BTN_PIN 14
+#define SEND_BTN_PIN  33
+#define Relay         13
+#define SDA           21
+#define SCL           22
+#define BUZZER_PIN    5 
+
+#define REF_VOLTAGE    3.3
+#define ADC_RESOLUTION 4096.0
+#define R1             30000.0
+#define R2             7500.0
+
+// ==========================================
+// ตัวแปร global
+// ==========================================
+const unsigned long interval = 5000;
+unsigned long previousMillis = 0, relayMillis = 0;
+
+const byte read_all[] = { 0x01, 0x03, 0x00, 0x00, 0x00, 0x08, 0x44, 0x0C };
+byte values[25];
+
+uint8_t lastN = 0, lastP = 0, lastK = 0, lastMoist = 0;
+bool hasValidData = false;
+
+volatile bool sleepBtnPressed = false;
+volatile bool ackReceived     = false;
+volatile bool failReceived    = false;
+
+// ✅ ตัวแปรสำหรับจับเวลารอ ACK
+bool          waitingForAck   = false;
+unsigned long ackTimeoutMs    = 0;
+#define ACK_TIMEOUT 2000  // รอ 2 วินาที
+
+BLECharacteristic *pCharacteristic;
 bool deviceConnected = false;
-bool oldDeviceConnected = false;
 
-// ตัวแปรเก็บค่า NPK และความชื้น
-int n_val = 0;
-int p_val = 0;
-int k_val = 0;
-int moist_val = 0;
+LiquidCrystal_I2C lcd(0x27, 20, 4);
 
-// --- Callback ตรวจจับการเชื่อมต่อ ---
-class MyServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
-      deviceConnected = true;
-      Serial.println("App Connected!");
-    };
+// ==========================================
+// ฟังก์ชันสำหรับ Buzzer
+// ==========================================
+void beepBuzzer() {
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(100); // ให้ดังสั้นๆ 100 มิลลิวินาที
+  digitalWrite(BUZZER_PIN, LOW);
+}
 
-    void onDisconnect(BLEServer* pServer) {
-      deviceConnected = false;
-      Serial.println("App Disconnected!");
+// ==========================================
+// ACK Callbacks
+// ==========================================
+class AckCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pChar) {
+    String value = pChar->getValue().c_str();
+    if (value == "OK") {
+      ackReceived = true;
+      Serial.println("✅ Flutter บันทึกสำเร็จแล้ว!");
+    } else if (value == "FAIL") {
+      failReceived = true;
+      Serial.println("❌ Flutter บันทึกไม่สำเร็จ!");
     }
+  }
 };
 
+// ==========================================
+// BLE Callbacks
+// ==========================================
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) {
+    deviceConnected = true;
+    Serial.println("📱 โทรศัพท์เชื่อมต่อแล้ว!");
+  }
+  void onDisconnect(BLEServer* pServer) {
+    deviceConnected = false;
+    waitingForAck   = false; // ✅ reset ถ้า disconnect ระหว่างรอ
+    Serial.println("❌ โทรศัพท์ตัดการเชื่อมต่อ...");
+    BLEDevice::startAdvertising();
+  }
+};
+
+// ==========================================
+// Interrupt
+// ==========================================
+void IRAM_ATTR handleSleepBtn() {
+  sleepBtnPressed = true;
+}
+
+// ==========================================
+// Setup
+// ==========================================
 void setup() {
-  Serial.begin(115200);
-  Serial.println("Starting BLE work!");
+  Serial.begin(9600);
+  gpio_hold_dis(GPIO_NUM_13);
+  gpio_deep_sleep_hold_dis();
 
-  // 1. เริ่มต้น BLE
-  BLEDevice::init("NPK Sensor"); // ชื่อที่จะโชว์ในแอปตอนสแกน
+  // ✅ ตั้งค่า Buzzer เป็น Output และปิดเสียงไว้ก่อน
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
 
-  // 2. สร้าง Server
-  pServer = BLEDevice::createServer();
+  Wire.begin(SDA, SCL);
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Soil Monitor");
+  delay(2000);
+  lcd.clear();
+
+  pinMode(SLEEP_BTN_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(SLEEP_BTN_PIN), handleSleepBtn, FALLING);
+
+  pinMode(SEND_BTN_PIN, INPUT_PULLUP);
+
+  Serial1.begin(9600, SERIAL_8N1, RXD2, TXD2);
+  pinMode(RE, OUTPUT);
+  digitalWrite(RE, LOW);
+
+  pinMode(Relay, OUTPUT);
+  digitalWrite(Relay, LOW);
+
+  BLEDevice::init("NPK_Sensor");
+  BLEServer *pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
-  // 3. สร้าง Service
-  BLEService *pService = pServer->createService(SERVICE_UUID);
-
-  // 4. สร้าง Characteristic
+  BLEService *pService = pServer->createService(BLEUUID(SERVICE_UUID), 20);
   pCharacteristic = pService->createCharacteristic(
-                      CHARACTERISTIC_UUID,
-                      BLECharacteristic::PROPERTY_READ |
-                      BLECharacteristic::PROPERTY_NOTIFY
-                    );
+    CHARACTERISTIC_UUID,
+    BLECharacteristic::PROPERTY_READ |
+    BLECharacteristic::PROPERTY_NOTIFY
+  );
 
-  // เพิ่ม Descriptor (จำเป็นสำหรับการแจ้งเตือน)
-  pCharacteristic->addDescriptor(new BLE2902());
+  BLECharacteristic *pAckChar = pService->createCharacteristic(
+    ACK_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+  pAckChar->setCallbacks(new AckCallbacks());
 
-  // 5. เริ่ม Service
   pService->start();
 
-  // 6. เริ่มโฆษณา (Advertising) ให้แอปหาเจอ
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(false);
-  pAdvertising->setMinPreferred(0x0);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);
+  pAdvertising->setMinPreferred(0x12);
   BLEDevice::startAdvertising();
-  Serial.println("Waiting for connection...");
+
+  Serial.println("📡 BLE พร้อมแล้ว! กดปุ่มขา 33 เพื่อส่งค่า NPK");
 }
 
+// ==========================================
+// Loop
+// ==========================================
 void loop() {
-  // --- ส่วนอ่านค่า Sensor ---
-  // ถ้าคุณมีเซนเซอร์จริง ให้เรียกฟังก์ชันอ่าน RS485 ตรงนี้
-  // readRealSensor(); 
-  
-  // *** สำหรับทดสอบ: สุ่มเลขจำลองค่า ***
-  n_val = random(10, 100);
-  p_val = random(10, 100);
-  k_val = random(10, 100);
-  moist_val = random(40, 90);
+  unsigned long currentMillis = millis();
 
-  // --- ส่วนส่งข้อมูลผ่าน BLE ---
-  if (deviceConnected) {
-    // เตรียมข้อมูลส่งเป็น Byte Array (4 ช่อง: N, P, K, Moisture)
-    uint8_t data[4];
-    data[0] = (uint8_t)n_val;
-    data[1] = (uint8_t)p_val;
-    data[2] = (uint8_t)k_val;
-    data[3] = (uint8_t)moist_val;
-
-    // อัปเดตค่าลงใน Characteristic
-    pCharacteristic->setValue(data, 4);
-    
-    // แจ้งเตือนไปยังแอป (ถ้าแอป Subscribe ไว้ แต่ในเคสนี้แอปเรากด Read เองก็ค่าเปลี่ยนเหมือนกัน)
-    pCharacteristic->notify();
-
-    Serial.printf("Sent: N=%d, P=%d, K=%d, Moist=%d\n", n_val, p_val, k_val, moist_val);
-    delay(2000); // อัปเดตทุก 2 วินาที
+  // ── ตรวจ ACK สำเร็จ ──
+  if (ackReceived) {
+    ackReceived   = false;
+    waitingForAck = false;
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Save successful");
+    lcd.setCursor(0, 1);
+    lcd.print("N:"); lcd.print(lastN);
+    lcd.print(" P:"); lcd.print(lastP);
+    lcd.print(" K:"); lcd.print(lastK);
+    lcd.setCursor(0, 2);
+    lcd.print("Moisture: "); lcd.print(lastMoist); lcd.print("%");
+    lcd.setCursor(0, 3);
+    lcd.print("GPS + Firebase OK");
+    delay(3000);
   }
 
-  // จัดการเรื่องการเชื่อมต่อหลุดแล้วต่อใหม่
-  if (!deviceConnected && oldDeviceConnected) {
-    delay(500); 
-    pServer->startAdvertising(); // เริ่มโฆษณาใหม่เมื่อหลุด
-    Serial.println("Start advertising...");
-    oldDeviceConnected = deviceConnected;
+  // ── ตรวจ FAIL จาก Flutter ──
+  if (failReceived) {
+    failReceived  = false;
+    waitingForAck = false;
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Save Failed!");
+    lcd.setCursor(0, 1);
+    lcd.print("Check GPS/Network");
+    delay(3000);
   }
-  
-  if (deviceConnected && !oldDeviceConnected) {
-    oldDeviceConnected = deviceConnected;
+
+  // ✅ ตรวจ timeout — ถ้ารอ ACK ครบ 2 วิแล้วยังไม่มีอะไรตอบกลับ
+  if (waitingForAck && (currentMillis - ackTimeoutMs >= ACK_TIMEOUT)) {
+    waitingForAck = false;
+    Serial.println("⏱️ Timeout! ไม่ได้รับ ACK จาก Flutter");
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Error: No Response");
+    lcd.setCursor(0, 1);
+    lcd.print("Check BLE/App");
+    lcd.setCursor(0, 2);
+    lcd.print("Background ON?");
+    delay(3000);
   }
-}
 
-// ---------------------------------------------------------
-// ตัวอย่างฟังก์ชันอ่านค่าจริง (ถ้าใช้ RS485 Modbus)
-// ต้องต่อขา: DI->TX2(17), RO->RX2(16), DE/RE->GPIO 4
-// ---------------------------------------------------------
-/*
-#define RE_DE_PIN 4 
-const byte code[] = {0x01, 0x03, 0x00, 0x1E, 0x00, 0x03, 0x65, 0xCD}; // ตัวอย่าง Command NPK (แล้วแต่รุ่น)
-byte values[11];
-
-void readRealSensor() {
-  pinMode(RE_DE_PIN, OUTPUT);
-  Serial2.begin(4800, SERIAL_8N1, 16, 17); // RX=16, TX=17
-
-  // ส่งคำสั่งขอข้อมูล
-  digitalWrite(RE_DE_PIN, HIGH);
-  Serial2.write(code, sizeof(code));
-  Serial2.flush();
-  digitalWrite(RE_DE_PIN, LOW);
-  delay(200);
-
-  // อ่านค่ากลับ
-  if (Serial2.available() >= 11) {
-    for (int i = 0; i < 11; i++) {
-      values[i] = Serial2.read();
+  // ── ปุ่ม Deep Sleep (ขา 14) ──
+  if (sleepBtnPressed) {
+    sleepBtnPressed = false;
+    if (digitalRead(SLEEP_BTN_PIN) == LOW) {
+      beepBuzzer(); // ✅ เรียกให้เสียงดังสั้นๆ เมื่อกดปุ่ม Sleep
+      Serial.println("Going to Deep Sleep...");
+      lcd.clear();
+      lcd.print("Sleep...");
+      lcd.noDisplay();
+      lcd.noBacklight();
+      while (digitalRead(SLEEP_BTN_PIN) == LOW) delay(10);
+      digitalWrite(Relay, HIGH);
+      delay(100);
+      gpio_hold_en(GPIO_NUM_13);
+      gpio_deep_sleep_hold_en();
+      esp_sleep_enable_ext0_wakeup(GPIO_NUM_14, 0);
+      delay(100);
+      esp_deep_sleep_start();
     }
-    // แปลงค่า (ขึ้นอยู่กับ Datasheet ของเซนเซอร์แต่ละรุ่น)
-    n_val = values[3] * 256 + values[4];
-    p_val = values[5] * 256 + values[6];
-    k_val = values[7] * 256 + values[8];
-    // ถ้ามี Moisture ก็อ่านต่อ
+  }
+
+  // ── ปุ่มส่งค่า NPK (ขา 33) ──
+  if (digitalRead(SEND_BTN_PIN) == LOW) {
+    delay(50);
+    if (digitalRead(SEND_BTN_PIN) == LOW) {
+      beepBuzzer(); // ✅ เรียกให้เสียงดังสั้นๆ เมื่อกดปุ่ม Send
+      
+      if (!hasValidData) {
+        Serial.println("⚠️ ยังไม่มีข้อมูลจากเซนเซอร์");
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("No Data Yet!");
+        delay(1500);
+      } else if (!deviceConnected) {
+        Serial.println("⚠️ ยังไม่มีโทรศัพท์เชื่อมต่อ");
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("BLE Not Connected");
+        delay(1500);
+      } else if (lastMoist < 20) { // ✅ เช็คความชื้นดิน (ต้อง >= 20%)
+        Serial.println("⚠️ ความชื้นต่ำกว่า 20% ไม่อนุญาตให้ส่งข้อมูล (NPK ไม่แม่นยำ)");
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Cannot Send Data!");
+        lcd.setCursor(0, 1);
+        lcd.print("Moisture < 20%");
+        lcd.setCursor(0, 2);
+        lcd.print("NPK Not Accurate");
+        // สั่งให้ Buzzer เตือนสั้นๆ อีก 2 ครั้งให้รู้ว่าส่งไม่ได้
+        delay(200); beepBuzzer(); delay(100); beepBuzzer();
+        delay(1500);
+      } else {
+        uint8_t dataToSend[4] = { lastN, lastP, lastK, lastMoist };
+        pCharacteristic->setValue(dataToSend, 4);
+        pCharacteristic->notify();
+        delay(100);
+
+        Serial.printf("📤 ส่งค่า BLE: N:%d P:%d K:%d Moist:%d\n",
+                      lastN, lastP, lastK, lastMoist);
+
+        // ✅ เริ่มจับเวลารอ ACK
+        waitingForAck = true;
+        ackTimeoutMs  = millis();
+
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Sending...");
+        lcd.setCursor(0, 1);
+        lcd.print("N:"); lcd.print(lastN);
+        lcd.print(" P:"); lcd.print(lastP);
+        lcd.print(" K:"); lcd.print(lastK);
+        lcd.setCursor(0, 2);
+        lcd.print("Moisture: "); lcd.print(lastMoist); lcd.print("%");
+        lcd.setCursor(0, 3);
+        lcd.print("Waiting response..");
+      }
+      while (digitalRead(SEND_BTN_PIN) == LOW) delay(10);
+    }
+  }
+
+  // ── อ่านค่าเซนเซอร์ทุก 5 วิ ──
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+
+    // ข้ามการอัปเดต LCD ถ้ากำลังรอ ACK อยู่
+    if (waitingForAck) return;
+
+    digitalWrite(RE, HIGH);
+    delay(10);
+    Serial1.write(read_all, sizeof(read_all));
+    Serial1.flush();
+    digitalWrite(RE, LOW);
+    delay(200);
+
+    int i = 0;
+    while (Serial1.available() && i < 25) {
+      values[i++] = Serial1.read();
+    }
+
+    float temp = 0, humid = 0, ph = 0;
+    int ec = 0, salinity = 0, n = 0, p = 0, k = 0;
+
+    if (i >= 21) {
+      temp     = (int16_t)((values[3]  << 8) | values[4])  / 10.0;
+      humid    = (uint16_t)((values[5] << 8) | values[6])  / 10.0;
+      ec       = (uint16_t)((values[7] << 8) | values[8]);
+      ph       = (uint16_t)((values[17]<< 8) | values[18]) / 100.0;
+      salinity = (uint16_t)((values[9] << 8) | values[10]);
+      n        = (uint16_t)((values[11]<< 8) | values[12]);
+      p        = (uint16_t)((values[13]<< 8) | values[14]);
+      k        = (uint16_t)((values[15]<< 8) | values[16]);
+
+      lastN     = (uint8_t)constrain(n, 0, 255);
+      lastP     = (uint8_t)constrain(p, 0, 255);
+      lastK     = (uint8_t)constrain(k, 0, 255);
+      lastMoist = (uint8_t)constrain((int)humid, 0, 255);
+      hasValidData = true;
+
+      Serial.printf("N:%d P:%d K:%d Temp:%.1f Humid:%.1f EC:%d pH:%.2f\n",
+                    n, p, k, temp, humid, ec, ph);
+
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("N:"); lcd.print(n);
+      lcd.print(" P:"); lcd.print(p);
+      lcd.print(" K:"); lcd.print(k);
+
+      lcd.setCursor(0, 1);
+      lcd.print("Temp:"); lcd.print(temp, 1); lcd.print("C");
+      lcd.print(" H:"); lcd.print(humid, 0); lcd.print("%");
+
+      int adc_value = analogRead(ANALOG_IN_PIN);
+      float voltage_adc = ((float)adc_value * REF_VOLTAGE) / ADC_RESOLUTION;
+      float voltage_in  = voltage_adc * (R1 + R2) / R2;
+      float mapped_value = constrain((voltage_in - 10.8) * 100.0 / (12.0 - 10.8), 0, 100);
+
+      lcd.setCursor(0, 2);
+      lcd.print("Batt:"); lcd.print(voltage_in, 2); lcd.print("V");
+      lcd.print(" "); lcd.print(mapped_value, 0); lcd.print("%");
+      lcd.setCursor(0, 3);
+      lcd.print(deviceConnected ? " BLE:Connect" : " BLE:Disconnect");
+
+      
+      
+      
+
+    } else {
+      Serial.println("❌ Error: No data from sensor");
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Sensor Error!");
+    }
+
+    if (currentMillis - relayMillis >= 20000) {
+      relayMillis = currentMillis;
+      digitalWrite(Relay, LOW);
+      delay(50);
+    }
   }
 }
-*/
