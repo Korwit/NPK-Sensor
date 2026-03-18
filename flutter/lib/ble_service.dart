@@ -28,9 +28,18 @@ class BLEService {
     _lastSavedData = {'n': n, 'p': p, 'k': k, 'moisture': m};
   }
 
+
   Future<void> connect(BluetoothDevice device) async {
     try {
-      await device.connect(autoConnect: false);
+      // ✅ ตั้งเวลา Timeout 5 วินาที
+      await device.connect(autoConnect: false).timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {
+          device.disconnect(); // สั่งยกเลิกการเชื่อมต่อที่ค้างอยู่ในระบบเครื่อง
+          throw Exception("Timeout"); // โยน Error ออกไป
+        },
+      );
+      
       connectedDevice = device;
       await device.discoverServices();
       await _subscribeToNPK();
@@ -47,7 +56,7 @@ class BLEService {
     connectedDevice = null;
   }
 
-  Future<void> _subscribeToNPK() async {
+Future<void> _subscribeToNPK() async {
     if (!isConnected || connectedDevice == null) return;
 
     try {
@@ -70,6 +79,12 @@ class BLEService {
                 final int p        = value[1];
                 final int k        = value[2];
                 final int moisture = value[3];
+
+                // ✅ ดักจับค่า 0: ถ้า ESP32 ส่งค่า 0 มา (เพราะเพิ่งล้าง Buffer) ให้ข้ามการทำงานไปเลย ห้ามเซฟ!
+                if (n == 0 && p == 0 && k == 0) {
+                  print('[BLE] ได้รับก้อนข้อมูลว่าง (0,0,0) จากการเคลียร์ Buffer -> ข้ามการบันทึก');
+                  return; 
+                }
 
                 print('[BLE] รับค่า NOTIFY: N:$n P:$p K:$k Moisture:$moisture');
 

@@ -24,7 +24,7 @@
 #define Relay         13
 #define SDA           21
 #define SCL           22
-#define BUZZER_PIN    5 
+#define BUZZER_PIN    26 
 
 #define REF_VOLTAGE    3.3
 #define ADC_RESOLUTION 4096.0
@@ -47,10 +47,10 @@ volatile bool sleepBtnPressed = false;
 volatile bool ackReceived     = false;
 volatile bool failReceived    = false;
 
-// ✅ ตัวแปรสำหรับจับเวลารอ ACK
+// ตัวแปรสำหรับจับเวลารอ ACK
 bool          waitingForAck   = false;
 unsigned long ackTimeoutMs    = 0;
-#define ACK_TIMEOUT 2000  // รอ 2 วินาที
+#define ACK_TIMEOUT 6000  // รอ 6 วินาที (ปรับตามโค้ดล่าสุดของคุณ)
 
 BLECharacteristic *pCharacteristic;
 bool deviceConnected = false;
@@ -58,14 +58,51 @@ bool deviceConnected = false;
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 
 // ==========================================
-// ฟังก์ชันสำหรับ Buzzer
+// ตัวแปรสำหรับระบบ Auto Deep Sleep
+// ==========================================
+unsigned long lastActivityMillis = 0; 
+const unsigned long SLEEP_TIMEOUT_DISCONNECT = 5 * 60 * 1000;  // 5 นาที 
+const unsigned long SLEEP_TIMEOUT_CONNECT    = 10 * 60 * 1000; // 10 นาที 
+
+// ==========================================
+// ✅ ฟังก์ชันสำหรับ Buzzer (Active Low)
 // ==========================================
 void beepBuzzer() {
-  digitalWrite(BUZZER_PIN, HIGH);
-  delay(100); // ให้ดังสั้นๆ 100 มิลลิวินาที
-  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW); // LOW = เสียงดัง
+  delay(100); 
+  digitalWrite(BUZZER_PIN, HIGH); // HIGH = ปิดเสียง
 }
 
+// ==========================================
+// ฟังก์ชันสำหรับเข้าโหมด Deep Sleep
+// ==========================================
+void goToDeepSleep(String msg, bool waitForButtonRelease) {
+  beepBuzzer();
+  Serial.println("Going to Deep Sleep... Reason: " + msg);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(msg);
+  delay(1000); 
+  
+  lcd.noDisplay();
+  lcd.noBacklight();
+  
+  if (waitForButtonRelease) {
+    while (digitalRead(SLEEP_BTN_PIN) == LOW) delay(10);
+  }
+  
+  digitalWrite(Relay, HIGH);
+  delay(100);
+  gpio_hold_en(GPIO_NUM_13);
+  gpio_deep_sleep_hold_en();
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_14, 0);
+  delay(100);
+  esp_deep_sleep_start();
+}
+
+// ==========================================
+// ACK Callbacks
+// ==========================================
 // ==========================================
 // ACK Callbacks
 // ==========================================
@@ -74,7 +111,22 @@ class AckCallbacks : public BLECharacteristicCallbacks {
     String value = pChar->getValue().c_str();
     if (value == "OK") {
       ackReceived = true;
-      Serial.println("✅ Flutter บันทึกสำเร็จแล้ว!");
+      Serial.println("✅ Flutter บันทึกสำเร็จแล้ว! ล้างค่าเป็น 0");
+      lastN = 0;
+      lastP = 0;
+      lastK = 0;
+      lastMoist = 0;
+
+      // ตั้งเป็น false ไว้ เพื่อบังคับให้รออ่านค่าจากเซนเซอร์รอบใหม่ก่อนถึงจะกดปุ่มส่งได้อีก
+      hasValidData = false; 
+
+      // อัปเดต Characteristic เป็น 0 และ Notify แจ้งแอปมือถือ
+      if (pCharacteristic != nullptr) {
+        uint8_t zeroData[4] = {0, 0, 0, 0};
+        pCharacteristic->setValue(zeroData, 4);
+        pCharacteristic->notify();
+      }
+
     } else if (value == "FAIL") {
       failReceived = true;
       Serial.println("❌ Flutter บันทึกไม่สำเร็จ!");
@@ -88,11 +140,13 @@ class AckCallbacks : public BLECharacteristicCallbacks {
 class MyServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* pServer) {
     deviceConnected = true;
+    lastActivityMillis = millis(); 
     Serial.println("📱 โทรศัพท์เชื่อมต่อแล้ว!");
   }
   void onDisconnect(BLEServer* pServer) {
     deviceConnected = false;
-    waitingForAck   = false; // ✅ reset ถ้า disconnect ระหว่างรอ
+    waitingForAck   = false;
+    lastActivityMillis = millis(); 
     Serial.println("❌ โทรศัพท์ตัดการเชื่อมต่อ...");
     BLEDevice::startAdvertising();
   }
@@ -113,21 +167,50 @@ void setup() {
   gpio_hold_dis(GPIO_NUM_13);
   gpio_deep_sleep_hold_dis();
 
-  // ✅ ตั้งค่า Buzzer เป็น Output และปิดเสียงไว้ก่อน
+  // ตั้งค่า Buzzer เป็น Active Low (เริ่มต้นต้องเป็น HIGH เพื่อปิดเสียง)
   pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(BUZZER_PIN, HIGH);
+
+  // ── ✅ เพิ่มเสียงเตือนตอนเปิดเครื่อง/กดปลุกตื่น ──
+  beepBuzzer(); 
+  delay(100); 
+  beepBuzzer();
 
   Wire.begin(SDA, SCL);
   lcd.init();
   lcd.backlight();
   lcd.setCursor(0, 0);
   lcd.print("Soil Monitor");
+  
+  pinMode(SLEEP_BTN_PIN, INPUT_PULLUP);
+  
+  // ── ตรวจสอบแบตเตอรี่ทันทีที่ตื่น/เปิดเครื่อง ──
+  int start_adc = analogRead(ANALOG_IN_PIN);
+  float start_v_adc = ((float)start_adc * REF_VOLTAGE) / ADC_RESOLUTION;
+  float start_v_in  = start_v_adc * (R1 + R2) / R2;
+  float start_batt = constrain((start_v_in - 10.8) * 100.0 / (12.0 - 10.8), 0, 100);
+
+  if (start_batt < 10.0) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Low Battery!");
+    lcd.setCursor(0, 1);
+    lcd.print("Batt: "); lcd.print(start_batt, 0); lcd.print("%");
+    lcd.setCursor(0, 2);
+    lcd.print("Please charge...");
+    
+    // รอให้ผู้ใช้ปล่อยปุ่ม (ถ้าเขากดค้างไว้ตอนปลุก) เพื่อไม่ให้ลูปตื่นรัวๆ
+    while (digitalRead(SLEEP_BTN_PIN) == LOW) delay(10); 
+    delay(2000); 
+    
+    // สั่งกลับไปหลับทันที
+    goToDeepSleep("Sleep (Low Batt)", false); 
+  }
+
   delay(2000);
   lcd.clear();
 
-  pinMode(SLEEP_BTN_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(SLEEP_BTN_PIN), handleSleepBtn, FALLING);
-
   pinMode(SEND_BTN_PIN, INPUT_PULLUP);
 
   Serial1.begin(9600, SERIAL_8N1, RXD2, TXD2);
@@ -163,6 +246,7 @@ void setup() {
   pAdvertising->setMinPreferred(0x12);
   BLEDevice::startAdvertising();
 
+  lastActivityMillis = millis(); 
   Serial.println("📡 BLE พร้อมแล้ว! กดปุ่มขา 33 เพื่อส่งค่า NPK");
 }
 
@@ -171,6 +255,13 @@ void setup() {
 // ==========================================
 void loop() {
   unsigned long currentMillis = millis();
+
+  // ── ตรวจสอบระบบ Auto Deep Sleep ──
+  unsigned long timeThreshold = deviceConnected ? SLEEP_TIMEOUT_CONNECT : SLEEP_TIMEOUT_DISCONNECT;
+  
+  if (currentMillis - lastActivityMillis >= timeThreshold) {
+    goToDeepSleep("Auto Sleep...", false); 
+  }
 
   // ── ตรวจ ACK สำเร็จ ──
   if (ackReceived) {
@@ -187,7 +278,9 @@ void loop() {
     lcd.print("Moisture: "); lcd.print(lastMoist); lcd.print("%");
     lcd.setCursor(0, 3);
     lcd.print("GPS + Firebase OK");
-    delay(3000);
+    digitalWrite(BUZZER_PIN, LOW); // LOW = เสียงดัง
+    delay(2500);
+    digitalWrite(BUZZER_PIN, HIGH); // LOW = เสียงดัง
   }
 
   // ── ตรวจ FAIL จาก Flutter ──
@@ -202,7 +295,7 @@ void loop() {
     delay(3000);
   }
 
-  // ✅ ตรวจ timeout — ถ้ารอ ACK ครบ 2 วิแล้วยังไม่มีอะไรตอบกลับ
+  // ── ตรวจ timeout รอ ACK ──
   if (waitingForAck && (currentMillis - ackTimeoutMs >= ACK_TIMEOUT)) {
     waitingForAck = false;
     Serial.println("⏱️ Timeout! ไม่ได้รับ ACK จาก Flutter");
@@ -220,20 +313,7 @@ void loop() {
   if (sleepBtnPressed) {
     sleepBtnPressed = false;
     if (digitalRead(SLEEP_BTN_PIN) == LOW) {
-      beepBuzzer(); // ✅ เรียกให้เสียงดังสั้นๆ เมื่อกดปุ่ม Sleep
-      Serial.println("Going to Deep Sleep...");
-      lcd.clear();
-      lcd.print("Sleep...");
-      lcd.noDisplay();
-      lcd.noBacklight();
-      while (digitalRead(SLEEP_BTN_PIN) == LOW) delay(10);
-      digitalWrite(Relay, HIGH);
-      delay(100);
-      gpio_hold_en(GPIO_NUM_13);
-      gpio_deep_sleep_hold_en();
-      esp_sleep_enable_ext0_wakeup(GPIO_NUM_14, 0);
-      delay(100);
-      esp_deep_sleep_start();
+      goToDeepSleep("Sleep...", true); 
     }
   }
 
@@ -241,7 +321,8 @@ void loop() {
   if (digitalRead(SEND_BTN_PIN) == LOW) {
     delay(50);
     if (digitalRead(SEND_BTN_PIN) == LOW) {
-      beepBuzzer(); // ✅ เรียกให้เสียงดังสั้นๆ เมื่อกดปุ่ม Send
+      lastActivityMillis = currentMillis; 
+      beepBuzzer(); 
       
       if (!hasValidData) {
         Serial.println("⚠️ ยังไม่มีข้อมูลจากเซนเซอร์");
@@ -255,8 +336,8 @@ void loop() {
         lcd.setCursor(0, 0);
         lcd.print("BLE Not Connected");
         delay(1500);
-      } else if (lastMoist < 20) { // ✅ เช็คความชื้นดิน (ต้อง >= 20%)
-        Serial.println("⚠️ ความชื้นต่ำกว่า 20% ไม่อนุญาตให้ส่งข้อมูล (NPK ไม่แม่นยำ)");
+      } else if (lastMoist < 20) { 
+        Serial.println("⚠️ ความชื้นต่ำกว่า 20%");
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Cannot Send Data!");
@@ -264,7 +345,6 @@ void loop() {
         lcd.print("Moisture < 20%");
         lcd.setCursor(0, 2);
         lcd.print("NPK Not Accurate");
-        // สั่งให้ Buzzer เตือนสั้นๆ อีก 2 ครั้งให้รู้ว่าส่งไม่ได้
         delay(200); beepBuzzer(); delay(100); beepBuzzer();
         delay(1500);
       } else {
@@ -273,10 +353,8 @@ void loop() {
         pCharacteristic->notify();
         delay(100);
 
-        Serial.printf("📤 ส่งค่า BLE: N:%d P:%d K:%d Moist:%d\n",
-                      lastN, lastP, lastK, lastMoist);
+        Serial.printf("📤 ส่งค่า BLE: N:%d P:%d K:%d Moist:%d\n", lastN, lastP, lastK, lastMoist);
 
-        // ✅ เริ่มจับเวลารอ ACK
         waitingForAck = true;
         ackTimeoutMs  = millis();
 
@@ -300,7 +378,6 @@ void loop() {
   if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;
 
-    // ข้ามการอัปเดต LCD ถ้ากำลังรอ ACK อยู่
     if (waitingForAck) return;
 
     digitalWrite(RE, HIGH);
@@ -334,8 +411,7 @@ void loop() {
       lastMoist = (uint8_t)constrain((int)humid, 0, 255);
       hasValidData = true;
 
-      Serial.printf("N:%d P:%d K:%d Temp:%.1f Humid:%.1f EC:%d pH:%.2f\n",
-                    n, p, k, temp, humid, ec, ph);
+      Serial.printf("N:%d P:%d K:%d Temp:%.1f Humid:%.1f EC:%d pH:%.2f\n", n, p, k, temp, humid, ec, ph);
 
       lcd.clear();
       lcd.setCursor(0, 0);
@@ -352,27 +428,23 @@ void loop() {
       float voltage_in  = voltage_adc * (R1 + R2) / R2;
       float mapped_value = constrain((voltage_in - 10.8) * 100.0 / (12.0 - 10.8), 0, 100);
 
+      // ── ถ้าแบตตกต่ำกว่า 10% ระหว่างกำลังทำงานอยู่ ให้เข้าโหมด Sleep ทันที ──
+      if (mapped_value < 10.0 && currentMillis > 3000) {
+        goToDeepSleep("Low Battery!", false);
+      }
+
       lcd.setCursor(0, 2);
       lcd.print("Batt:"); lcd.print(voltage_in, 2); lcd.print("V");
-      lcd.print(" "); lcd.print(mapped_value, 0); lcd.print("%");
+      lcd.print(" "); lcd.print(mapped_value, 0); lcd.print("%   "); 
+      
       lcd.setCursor(0, 3);
-      lcd.print(deviceConnected ? " BLE:Connect" : " BLE:Disconnect");
-
-      
-      
-      
+      lcd.print(deviceConnected ? " BLE:Connect   " : " BLE:Disconnect");
 
     } else {
       Serial.println("❌ Error: No data from sensor");
       lcd.clear();
       lcd.setCursor(0, 0);
       lcd.print("Sensor Error!");
-    }
-
-    if (currentMillis - relayMillis >= 20000) {
-      relayMillis = currentMillis;
-      digitalWrite(Relay, LOW);
-      delay(50);
     }
   }
 }

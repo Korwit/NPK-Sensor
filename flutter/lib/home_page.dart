@@ -5,7 +5,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart'; 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -14,7 +14,8 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ble_service.dart' if (dart.library.html) 'ble_manager_web.dart';
-import 'bluetooth_scan_dialog.dart' if (dart.library.html) 'ble_manager_web.dart';
+import 'bluetooth_scan_dialog.dart'
+    if (dart.library.html) 'ble_manager_web.dart';
 
 import 'soil_analysis_page.dart';
 
@@ -61,9 +62,9 @@ class _HomePageState extends State<HomePage> {
 
     if (!kIsWeb) {
       _checkAutoSaveStatus();
-      _ackSubscription = FlutterBackgroundService()
-          .on('sendAckToBLE')
-          .listen((event) async {
+      _ackSubscription = FlutterBackgroundService().on('sendAckToBLE').listen((
+        event,
+      ) async {
         debugPrint('[UI] รับ sendAckToBLE event จาก background');
         if (BLEService().isConnected) {
           await BLEService().writeAck();
@@ -120,12 +121,13 @@ class _HomePageState extends State<HomePage> {
           ],
         ),
         content: const Text(
-            "กรุณาเปิดบลูทูธในตั้งค่าโทรศัพท์ของคุณ เพื่อเชื่อมต่อกับเซนเซอร์ NPK"),
+          "กรุณาเปิดบลูทูธในตั้งค่าโทรศัพท์ของคุณ เพื่อเชื่อมต่อกับเซนเซอร์ NPK",
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: const Text("ตกลง"),
-          )
+          ),
         ],
       ),
     );
@@ -145,8 +147,9 @@ class _HomePageState extends State<HomePage> {
         content: const Text("คุณต้องการเลิกเชื่อมต่อกับอุปกรณ์ใช่หรือไม่?"),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("ยกเลิก")),
+            onPressed: () => Navigator.pop(context),
+            child: const Text("ยกเลิก"),
+          ),
           TextButton(
             onPressed: () async {
               Navigator.pop(context);
@@ -201,8 +204,10 @@ class _HomePageState extends State<HomePage> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-                content: Text(
-                    "กรุณาอนุญาตการแจ้งเตือน เพื่อใช้งานระบบบันทึกเบื้องหลัง")),
+              content: Text(
+                "กรุณาอนุญาตการแจ้งเตือน เพื่อใช้งานระบบบันทึกเบื้องหลัง",
+              ),
+            ),
           );
         }
         return;
@@ -228,8 +233,8 @@ class _HomePageState extends State<HomePage> {
         SharedPreferences prefs = await SharedPreferences.getInstance();
         await prefs.setString('bg_garden_id', widget.gardenId);
         await prefs.setString('bg_inspect_id', widget.inspectionDateId);
-        await prefs.setString('bg_user_uid', currentUser?.uid ?? '');     
-        await prefs.setString('bg_user_email', currentUser?.email ?? ''); 
+        await prefs.setString('bg_user_uid', currentUser?.uid ?? '');
+        await prefs.setString('bg_user_email', currentUser?.email ?? '');
 
         bool isRunning = await service.isRunning();
         if (isRunning) {
@@ -248,9 +253,9 @@ class _HomePageState extends State<HomePage> {
           setState(() => _isAutoSaving = true);
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-                content: Text(
-                    "เปิดโหมดบันทึกอัตโนมัติแล้ว! (ทำงานตอนปิดจอได้)"),
-                backgroundColor: Colors.green),
+              content: Text("เปิดโหมดบันทึกอัตโนมัติแล้ว! (ทำงานตอนปิดจอได้)"),
+              backgroundColor: Colors.green,
+            ),
           );
         }
       }
@@ -296,7 +301,7 @@ class _HomePageState extends State<HomePage> {
         builder: (ctx) => SoilAnalysisPage(
           gardenId: widget.gardenId,
           inspectionDateId: widget.inspectionDateId,
-          userRole: widget.userRole, 
+          userRole: widget.userRole,
         ),
       ),
     );
@@ -327,6 +332,7 @@ class _HomePageState extends State<HomePage> {
 
       int n = 0, p = 0, k = 0, moisture = 0;
       String source = "Manual";
+      bool isStale = false;
 
       if (_isBlueConnected && BLEService().isConnected) {
         try {
@@ -339,7 +345,8 @@ class _HomePageState extends State<HomePage> {
             source = "Sensor (BLE)";
 
             if (data['isStale'] == 1) {
-              source = "Manual"; 
+              isStale = true;
+              source = "Sensor (ข้อมูลซ้ำ)";
             }
           }
         } catch (e) {
@@ -350,32 +357,41 @@ class _HomePageState extends State<HomePage> {
                 content: Text("$e"),
                 backgroundColor: Colors.red,
                 duration: const Duration(seconds: 5),
-                action: SnackBarAction(label: 'ปิด', textColor: Colors.white, onPressed: () {}),
+                action: SnackBarAction(
+                  label: 'ปิด',
+                  textColor: Colors.white,
+                  onPressed: () {},
+                ),
               ),
             );
           }
         }
       }
 
-      if (n == 0 && p == 0 && k == 0) {
+      if ((n == 0 && p == 0 && k == 0) || isStale) {
         if (mounted) Navigator.pop(context);
 
         if (mounted) {
+          String alertTitle = (n == 0 && p == 0 && k == 0) ? "แจ้งเตือนค่าเป็น 0" : "แจ้งเตือนข้อมูลซ้ำ";
+          String alertMsg = (n == 0 && p == 0 && k == 0)
+              ? "ค่า N P K เป็น 0 ทั้งหมด\nคุณอาจจะยังไม่ได้กดส่งข้อมูลที่เซนเซอร์"
+              : "ค่าที่อ่านได้ซ้ำกับจุดที่แล้ว (N:$n P:$p K:$k)\nเซนเซอร์อาจจะยังไม่อัปเดตค่าใหม่ หรือกดปุ่มที่แอปเร็วเกินไป";
+
           bool? confirm = await showDialog<bool>(
             context: context,
             barrierDismissible: false,
             builder: (ctx) => AlertDialog(
-              title: const Row(
+              title: Row(
                 children: [
-                  Icon(Icons.warning_amber_rounded, color: Colors.orange),
-                  SizedBox(width: 10),
-                  Flexible(child: Text("แจ้งเตือนค่าเป็น 0")),
+                  const Icon(Icons.warning_amber_rounded, color: Colors.orange),
+                  const SizedBox(width: 10),
+                  Flexible(child: Text(alertTitle)),
                 ],
               ),
-              content: const Text(
-                "ค่า N P K เป็น 0 ทั้งหมด (หรือเป็นข้อมูลซ้ำ)\n\n"
-                "• หากคุณต้องการค่าจริง: กรุณากดส่งข้อมูลที่เซนเซอร์ก่อน\n"
-                "• หากต้องการบันทึกค่า 0: กดยืนยันด้านล่าง",
+              content: Text(
+                "$alertMsg\n\n"
+                "• หากต้องการค่าใหม่: กด 'ยกเลิก' แล้วไปกดส่งที่เซนเซอร์อีกครั้ง\n"
+                "• หากยืนยันจะบันทึกค่านี้: กดยืนยันด้านล่าง",
               ),
               actions: [
                 TextButton(
@@ -385,14 +401,17 @@ class _HomePageState extends State<HomePage> {
                 ElevatedButton(
                   onPressed: () => Navigator.pop(ctx, true),
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
-                  child: const Text("บันทึกค่า 0", style: TextStyle(color: Colors.white)),
+                  child: const Text(
+                    "บันทึกค่านี้",
+                    style: TextStyle(color: Colors.white),
+                  ),
                 ),
               ],
             ),
           );
 
           if (confirm != true) return;
-          if (mounted) _showLoadingDialog(context); 
+          if (mounted) _showLoadingDialog(context);
         }
       }
 
@@ -403,30 +422,32 @@ class _HomePageState extends State<HomePage> {
           .doc(widget.inspectionDateId)
           .collection('points')
           .add({
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-        'altitude': altitude,
-        'timestamp': FieldValue.serverTimestamp(),
-        'n_value': n,
-        'p_value': p,
-        'k_value': k,
-        'moisture': moisture,
-        'source': source,
-        'created_by_uid': currentUser?.uid,       
-        'created_by_email': currentUser?.email,   
-      });
+            'latitude': position.latitude,
+            'longitude': position.longitude,
+            'altitude': altitude,
+            'timestamp': FieldValue.serverTimestamp(),
+            'n_value': n,
+            'p_value': p,
+            'k_value': k,
+            'moisture': moisture,
+            'source': source,
+            'created_by_uid': currentUser?.uid,
+            'created_by_email': currentUser?.email,
+          });
 
       if (mounted) {
-        Navigator.pop(context); 
-        
+        Navigator.pop(context);
+
         if (source == "Sensor (BLE)") {
           BLEService().markAsSaved(n, p, k, moisture);
+          await BLEService().writeAck();
         }
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text("บันทึกสำเร็จ! (N:$n P:$p K:$k)"),
-              backgroundColor: Colors.green),
+            content: Text("บันทึกสำเร็จ! (N:$n P:$p K:$k)"),
+            backgroundColor: Colors.green,
+          ),
         );
       }
     } catch (e) {
@@ -434,8 +455,9 @@ class _HomePageState extends State<HomePage> {
         Navigator.of(context, rootNavigator: true).maybePop();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text("เกิดข้อผิดพลาด: $e"),
-              backgroundColor: Colors.red),
+            content: Text("เกิดข้อผิดพลาด: $e"),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
@@ -449,8 +471,9 @@ class _HomePageState extends State<HomePage> {
         content: const Text("ต้องการลบจุดตรวจนี้ใช่ไหม?"),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("ยกเลิก")),
+            onPressed: () => Navigator.pop(context),
+            child: const Text("ยกเลิก"),
+          ),
           TextButton(
             onPressed: () async {
               await FirebaseFirestore.instance
@@ -464,9 +487,12 @@ class _HomePageState extends State<HomePage> {
 
               setState(() => _selectedIndex = null);
               if (mounted) Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
                   content: Text("ลบเรียบร้อย"),
-                  backgroundColor: Colors.redAccent));
+                  backgroundColor: Colors.redAccent,
+                ),
+              );
             },
             style: TextButton.styleFrom(foregroundColor: Colors.red),
             child: const Text("ลบ"),
@@ -485,25 +511,26 @@ class _HomePageState extends State<HomePage> {
     bool isOwner = (widget.userRole == 'owner');
     String createdByUid = data['created_by_uid'] ?? '';
     String createdByEmail = data['created_by_email'] ?? 'ไม่ระบุ';
-    bool isCreator = (currentUser?.uid != null && createdByUid == currentUser?.uid);
-    bool canDelete = isOwner || isCreator; 
+    bool isCreator =
+        (currentUser?.uid != null && createdByUid == currentUser?.uid);
+    bool canDelete = isOwner || isCreator;
 
     showModalBottomSheet(
       context: context,
-      isScrollControlled: true, 
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (context) {
-        return SingleChildScrollView( 
+        return SingleChildScrollView(
           child: Padding(
             padding: EdgeInsets.only(
-              bottom: MediaQuery.of(context).viewInsets.bottom, 
+              bottom: MediaQuery.of(context).viewInsets.bottom,
             ),
             child: Container(
               padding: const EdgeInsets.all(20),
               child: Column(
-                mainAxisSize: MainAxisSize.min, 
+                mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
@@ -513,39 +540,52 @@ class _HomePageState extends State<HomePage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text("ข้อมูลจุดตรวจ",
-                                style: TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold)),
-                            Text(_formatDateTime(data['timestamp']),
-                                style: const TextStyle(
-                                    fontSize: 14, color: Colors.grey)),
+                            const Text(
+                              "ข้อมูลจุดตรวจ",
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              _formatDateTime(data['timestamp']),
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey,
+                              ),
+                            ),
                             if (data['source'] != null)
-                              Text("ที่มา: ${data['source']}",
-                                  style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey[600])),
-                            
+                              Text(
+                                "ที่มา: ${data['source']}",
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[600],
+                                ),
+                              ),
+
                             if (data['created_by_email'] != null)
                               Padding(
                                 padding: const EdgeInsets.only(top: 2.0),
-                                child: Text("ผู้บันทึก: $createdByEmail",
-                                    style: TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.teal[700],
-                                        fontWeight: FontWeight.bold)),
+                                child: Text(
+                                  "ผู้บันทึก: $createdByEmail",
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.teal[700],
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
                               ),
                           ],
                         ),
                       ),
-                      if (canDelete) 
+                      if (canDelete)
                         IconButton(
-                            icon:
-                                const Icon(Icons.delete, color: Colors.red),
-                            onPressed: () {
-                              Navigator.pop(context);
-                              _deletePoint(docId);
-                            }),
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                          onPressed: () {
+                            Navigator.pop(context);
+                            _deletePoint(docId);
+                          },
+                        ),
                     ],
                   ),
                   const Divider(),
@@ -554,20 +594,35 @@ class _HomePageState extends State<HomePage> {
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
                     children: [
                       Flexible(
-                          child: _buildValueBox(
-                              "N", "${data['n_value']}", Colors.blue)),
+                        child: _buildValueBox(
+                          "N",
+                          "${data['n_value']}",
+                          Colors.blue,
+                        ),
+                      ),
                       Flexible(
-                          child: _buildValueBox(
-                              "P", "${data['p_value']}", Colors.green)),
+                        child: _buildValueBox(
+                          "P",
+                          "${data['p_value']}",
+                          Colors.green,
+                        ),
+                      ),
                       Flexible(
-                          child: _buildValueBox(
-                              "K", "${data['k_value']}", Colors.orange)),
+                        child: _buildValueBox(
+                          "K",
+                          "${data['k_value']}",
+                          Colors.orange,
+                        ),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 15),
                   Center(
-                      child: Text("ความชื้น: ${data['moisture']}%",
-                          style: const TextStyle(fontSize: 16))),
+                    child: Text(
+                      "ความชื้น: ${data['moisture']}%",
+                      style: const TextStyle(fontSize: 16),
+                    ),
+                  ),
                   if (data['altitude'] != null)
                     Center(
                       child: Text(
@@ -575,7 +630,7 @@ class _HomePageState extends State<HomePage> {
                         style: const TextStyle(fontSize: 16),
                       ),
                     ),
-                  const SizedBox(height: 10), 
+                  const SizedBox(height: 10),
                 ],
               ),
             ),
@@ -587,24 +642,28 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildValueBox(String label, String value, Color color) {
     return Column(
-      mainAxisSize: MainAxisSize.min, 
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Text(label,
-            style: TextStyle(
-                color: color,
-                fontWeight: FontWeight.bold,
-                fontSize: 18)),
+        Text(
+          label,
+          style: TextStyle(
+            color: color,
+            fontWeight: FontWeight.bold,
+            fontSize: 18,
+          ),
+        ),
         Container(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           decoration: BoxDecoration(
-              color: color.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: color)),
-          child: Text(value,
-              style: const TextStyle(
-                  fontSize: 20, fontWeight: FontWeight.bold),
-              overflow: TextOverflow.ellipsis),
+            color: color.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: color),
+          ),
+          child: Text(
+            value,
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
       ],
     );
@@ -628,8 +687,7 @@ class _HomePageState extends State<HomePage> {
             IconButton(
               icon: Icon(
                 _isAutoSaving ? Icons.cloud_sync : Icons.cloud_off,
-                color:
-                    _isAutoSaving ? Colors.yellowAccent : Colors.white,
+                color: _isAutoSaving ? Colors.yellowAccent : Colors.white,
               ),
               tooltip: _isAutoSaving
                   ? "ปิดบันทึกอัตโนมัติ"
@@ -641,11 +699,9 @@ class _HomePageState extends State<HomePage> {
               _isBlueConnected
                   ? Icons.bluetooth_connected
                   : Icons.bluetooth_searching,
-              color:
-                  _isBlueConnected ? Colors.blue[100] : Colors.white,
+              color: _isBlueConnected ? Colors.blue[100] : Colors.white,
             ),
-            tooltip:
-                _isBlueConnected ? "ตัดการเชื่อมต่อ" : "ค้นหาอุปกรณ์",
+            tooltip: _isBlueConnected ? "ตัดการเชื่อมต่อ" : "ค้นหาอุปกรณ์",
             onPressed: () async {
               if (_isBlueConnected) {
                 _confirmDisconnect();
@@ -653,8 +709,7 @@ class _HomePageState extends State<HomePage> {
                 if (kIsWeb) {
                   await showBluetoothScanDialog(
                     context: context,
-                    onConnected: () =>
-                        setState(() => _isBlueConnected = true),
+                    onConnected: () => setState(() => _isBlueConnected = true),
                     onDisconnected: () =>
                         setState(() => _isBlueConnected = false),
                   );
@@ -684,11 +739,13 @@ class _HomePageState extends State<HomePage> {
             }),
             itemBuilder: (context) => [
               const PopupMenuItem(
-                  value: true,
-                  child: Text('เรียง: ล่าสุด -> เก่าสุด')),
+                value: true,
+                child: Text('เรียง: ล่าสุด -> เก่าสุด'),
+              ),
               const PopupMenuItem(
-                  value: false,
-                  child: Text('เรียง: เก่าสุด -> ล่าสุด')),
+                value: false,
+                child: Text('เรียง: เก่าสุด -> ล่าสุด'),
+              ),
             ],
           ),
         ],
@@ -704,22 +761,22 @@ class _HomePageState extends State<HomePage> {
             .snapshots(),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
-            return Center(
-                child: Text("Error: ${snapshot.error}"));
+            return Center(child: Text("Error: ${snapshot.error}"));
           }
           if (!snapshot.hasData) {
-            return const Center(
-                child: CircularProgressIndicator());
+            return const Center(child: CircularProgressIndicator());
           }
 
           var docs = snapshot.data!.docs;
           List<Marker> mapMarkers = [];
-          Marker? activeMarker; 
+          Marker? activeMarker;
 
           for (int i = 0; i < docs.length; i++) {
             var data = docs[i].data() as Map<String, dynamic>;
-            LatLng point =
-                LatLng(data['latitude'] ?? 0, data['longitude'] ?? 0);
+            LatLng point = LatLng(
+              data['latitude'] ?? 0,
+              data['longitude'] ?? 0,
+            );
             bool isSelected = (i == _selectedIndex);
 
             Marker marker = Marker(
@@ -733,8 +790,11 @@ class _HomePageState extends State<HomePage> {
                 },
                 child: isSelected
                     ? const BouncingPin()
-                    : const Icon(Icons.location_on,
-                        color: Colors.red, size: 40),
+                    : const Icon(
+                        Icons.location_on,
+                        color: Colors.red,
+                        size: 40,
+                      ),
               ),
             );
 
@@ -746,12 +806,18 @@ class _HomePageState extends State<HomePage> {
           }
 
           if (!_isLoadingLocation) {
-            mapMarkers.add(Marker(
+            mapMarkers.add(
+              Marker(
                 point: _currentPosition,
                 width: 40,
                 height: 40,
-                child: const Icon(Icons.my_location,
-                    color: Colors.blue, size: 30)));
+                child: const Icon(
+                  Icons.my_location,
+                  color: Colors.blue,
+                  size: 30,
+                ),
+              ),
+            );
           }
 
           if (activeMarker != null) {
@@ -772,9 +838,9 @@ class _HomePageState extends State<HomePage> {
                       SizedBox(width: 8),
                       Flexible(
                         child: Text(
-                            "กำลังบันทึกพิกัดอัตโนมัติเบื้องหลัง...",
-                            style: TextStyle(
-                                fontWeight: FontWeight.bold)),
+                          "กำลังบันทึกพิกัดอัตโนมัติเบื้องหลัง...",
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
                       ),
                     ],
                   ),
@@ -784,48 +850,54 @@ class _HomePageState extends State<HomePage> {
                 child: FlutterMap(
                   mapController: _mapController,
                   options: MapOptions(
-                      initialCenter: _currentPosition,
-                      initialZoom: 16.0,
-                      onTap: (_, __) =>
-                          setState(() => _selectedIndex = null)),
+                    initialCenter: _currentPosition,
+                    initialZoom: 16.0,
+                    onTap: (_, __) => setState(() => _selectedIndex = null),
+                  ),
                   children: [
                     TileLayer(
-                        urlTemplate:
-                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                        userAgentPackageName:
-                            'com.example.soil_app'),
+                      urlTemplate:
+                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName: 'com.example.soil_app',
+                    ),
                     MarkerLayer(markers: mapMarkers),
                   ],
                 ),
               ),
               Container(
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 10, vertical: 5),
+                  horizontal: 10,
+                  vertical: 5,
+                ),
                 color: Colors.green[50],
                 width: double.infinity,
                 child: Row(
                   children: [
                     Flexible(
                       child: Text(
-                          "รายการตรวจ (${docs.length} จุด)",
-                          style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16)),
+                        "รายการตรวจ (${docs.length} จุด)",
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
                     ),
                     TextButton.icon(
                       onPressed: _openAnalysisPage,
-                      icon: const Icon(Icons.analytics,
-                          size: 16, color: Colors.teal),
-                      label: const Text("วิเคราะห์",
-                          style: TextStyle(
-                              color: Colors.teal, fontSize: 13)),
+                      icon: const Icon(
+                        Icons.analytics,
+                        size: 16,
+                        color: Colors.teal,
+                      ),
+                      label: const Text(
+                        "วิเคราะห์",
+                        style: TextStyle(color: Colors.teal, fontSize: 13),
+                      ),
                     ),
                     Text(
-                        _isDescending
-                            ? "(ล่าสุดก่อน)"
-                            : "(เก่าสุดก่อน)",
-                        style: const TextStyle(
-                            fontSize: 12, color: Colors.grey)),
+                      _isDescending ? "(ล่าสุดก่อน)" : "(เก่าสุดก่อน)",
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
                   ],
                 ),
               ),
@@ -836,55 +908,72 @@ class _HomePageState extends State<HomePage> {
                   itemBuilder: (context, index) {
                     var data = docs[index].data() as Map<String, dynamic>;
                     bool isSelected = (index == _selectedIndex);
-                    
+
                     String createdByUid = data['created_by_uid'] ?? '';
-                    String createdByEmail = data['created_by_email'] ?? 'ไม่ระบุ';
-                    bool isCreator = (currentUser?.uid != null && createdByUid == currentUser?.uid);
+                    String createdByEmail =
+                        data['created_by_email'] ?? 'ไม่ระบุ';
+                    bool isCreator =
+                        (currentUser?.uid != null &&
+                        createdByUid == currentUser?.uid);
                     bool canDelete = isOwner || isCreator;
 
                     return Card(
-                      color: isSelected
-                          ? Colors.green[100]
-                          : Colors.white,
+                      color: isSelected ? Colors.green[100] : Colors.white,
                       margin: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 5),
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
                       child: ListTile(
                         leading: CircleAvatar(
-                            backgroundColor: isSelected
-                                ? Colors.blue
-                                : Colors.green,
-                            child: Text("${index + 1}",
-                                style: const TextStyle(
-                                    color: Colors.white))),
+                          backgroundColor: isSelected
+                              ? Colors.blue
+                              : Colors.green,
+                          child: Text(
+                            "${index + 1}",
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                        ),
                         title: Text(
-                            "บันทึกเมื่อ: ${_formatDateTime(data['timestamp'])}",
-                            style: const TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold)),
+                          "บันทึกเมื่อ: ${_formatDateTime(data['timestamp'])}",
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                         subtitle: Padding(
                           padding: const EdgeInsets.only(top: 4.0),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text("N: ${data['n_value']} P: ${data['p_value']} K: ${data['k_value']}"),
+                              Text(
+                                "N: ${data['n_value']} P: ${data['p_value']} K: ${data['k_value']}",
+                              ),
                               const SizedBox(height: 2),
-                              Text("ผู้บันทึก: $createdByEmail", style: TextStyle(fontSize: 11, color: Colors.teal[700])),
+                              Text(
+                                "ผู้บันทึก: $createdByEmail",
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.teal[700],
+                                ),
+                              ),
                             ],
                           ),
                         ),
                         trailing: canDelete
                             ? IconButton(
-                                icon: const Icon(Icons.delete,
-                                    color: Colors.red),
-                                onPressed: () =>
-                                    _deletePoint(docs[index].id))
+                                icon: const Icon(
+                                  Icons.delete,
+                                  color: Colors.red,
+                                ),
+                                onPressed: () => _deletePoint(docs[index].id),
+                              )
                             : null,
                         onTap: () {
                           _selectPoint(
                             index,
-                            LatLng(data['latitude'], data['longitude'])
+                            LatLng(data['latitude'], data['longitude']),
                           );
-                          _showMarkerDetails(docs[index].id, data); 
+                          _showMarkerDetails(docs[index].id, data);
                         },
                       ),
                     );
@@ -895,16 +984,20 @@ class _HomePageState extends State<HomePage> {
           );
         },
       ),
-      // ✅ เปลี่ยนลอจิก: จะแสดงปุ่มก็ต่อเมื่อเชื่อมต่อบลูทูธแล้วเท่านั้น
-      floatingActionButton: _isBlueConnected
+
+      // ✅ เปลี่ยนลอจิก: จะแสดงปุ่มก็ต่อเมื่อ "เชื่อมต่อบลูทูธแล้ว" และ "ไม่ได้เปิดโหมดบันทึกอัตโนมัติอยู่"
+      floatingActionButton: (_isBlueConnected && !_isAutoSaving)
           ? FloatingActionButton.extended(
               heroTag: "fab_save",
               onPressed: _addNewPoint,
-              label: const Text("อ่านค่า & บันทึก", style: TextStyle(color: Colors.white)),
+              label: const Text(
+                "อ่านค่า & บันทึก",
+                style: TextStyle(color: Colors.white),
+              ),
               icon: const Icon(Icons.bluetooth_audio, color: Colors.white),
               backgroundColor: Colors.blue[700],
             )
-          : null, // ✅ ถ้ายังไม่เชื่อมต่อ ให้ซ่อนปุ่มไปเลย
+          : null, // ✅ ถ้ายังไม่เชื่อมต่อ หรือ เปิดโหมดออโต้เซฟอยู่ ให้ซ่อนปุ่มไปเลย // ✅ ถ้ายังไม่เชื่อมต่อ ให้ซ่อนปุ่มไปเลย
     );
   }
 }
@@ -924,11 +1017,13 @@ class _BouncingPinState extends State<BouncingPin>
   void initState() {
     super.initState();
     _controller = AnimationController(
-        duration: const Duration(milliseconds: 1000), vsync: this)
-      ..repeat(reverse: true);
-    _animation = Tween<double>(begin: 0, end: -15).animate(
-        CurvedAnimation(
-            parent: _controller, curve: Curves.easeInOut));
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    )..repeat(reverse: true);
+    _animation = Tween<double>(
+      begin: 0,
+      end: -15,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
   }
 
   @override
@@ -940,10 +1035,12 @@ class _BouncingPinState extends State<BouncingPin>
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-        animation: _animation,
-        builder: (context, child) => Transform.translate(
-            offset: Offset(0, _animation.value), child: child),
-        child: const Icon(Icons.location_on,
-            color: Colors.blue, size: 50));
+      animation: _animation,
+      builder: (context, child) => Transform.translate(
+        offset: Offset(0, _animation.value),
+        child: child,
+      ),
+      child: const Icon(Icons.location_on, color: Colors.blue, size: 50),
+    );
   }
 }

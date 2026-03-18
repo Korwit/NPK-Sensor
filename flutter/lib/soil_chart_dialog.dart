@@ -4,7 +4,9 @@ import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
-import 'dart:math' as math; 
+import 'dart:math' as math;
+import 'dart:typed_data';
+import 'package:share_plus/share_plus.dart';
 
 // ─────────────────────────────────────────────
 // Data model
@@ -189,7 +191,7 @@ Future<void> _exportFullPDF(
           pw.Text("คำแนะนำการจัดการปุ๋ยเบื้องต้น", style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.green)),
           pw.SizedBox(height: 8),
           if (advices.isEmpty)
-             pw.Text("- ค่าดินอยู่ในเกณฑ์ปกติ ไม่จำเป็นต้องปรับปรุง", style: const pw.TextStyle(color: PdfColors.green, fontSize: 11))
+              pw.Text("- ค่าดินอยู่ในเกณฑ์ปกติ ไม่จำเป็นต้องปรับปรุง", style: const pw.TextStyle(color: PdfColors.green, fontSize: 11))
           else
             ...advices.map((a) => pw.Padding(padding: const pw.EdgeInsets.only(bottom: 4), child: pw.Text("• $a", style: const pw.TextStyle(fontSize: 11)))),
 
@@ -218,7 +220,14 @@ Future<void> _exportFullPDF(
     if (context.mounted) Navigator.pop(context); 
     
     final fileName = "soil_report_${DateFormat('yyyyMMdd_HHmm').format(DateTime.now())}.pdf";
-    await Printing.sharePdf(bytes: bytes, filename: fileName);
+    
+    final xFile = XFile.fromData(
+      bytes,
+      name: fileName,
+      mimeType: 'application/pdf',
+    );
+    
+    await Share.shareXFiles([xFile], text: 'รายงานวิเคราะห์ค่าดิน NPK: $fileName');
 
   } catch (e) {
     if (context.mounted) {
